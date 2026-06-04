@@ -150,6 +150,12 @@ export default function Chat() {
   const [error, setError] = useState(null)
   const [toast, setToast] = useState(null)
 
+  useEffect(() => {
+    if (!API_URL) {
+      setError('Backend URL not configured. Set VITE_API_URL in Netlify environment variables.')
+    }
+  }, [])
+
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -184,21 +190,13 @@ export default function Chat() {
         body: JSON.stringify({ message: msgText, thread_id: threadId }),
       })
 
-      if (!res.ok) {
-        const detail = await res.text()
-        throw new Error(`Server error ${res.status}: ${detail}`)
-      }
-
       const data = await res.json()
-      const agentMsg = {
-        id: generateUUID(),
-        role: 'agent',
-        content: data.answer || '',
-        timestamp: new Date(),
-      }
+      if (!res.ok) throw new Error(data.detail || 'Server error')
+      const answer = data.answer || ''
+      const agentMsg = { id: Date.now(), role: 'agent', content: answer, timestamp: new Date() }
       setMessages((prev) => [...prev, agentMsg])
     } catch (err) {
-      setError(err.message || 'Failed to reach the agent. Is the backend running?')
+      setError(`Connection failed: ${err.message}. Is the backend running?`)
     } finally {
       setLoading(false)
     }
@@ -239,7 +237,7 @@ export default function Chat() {
       {/* Header */}
       <div className="chat__header">
         <span className="chat__header-title">
-          ⚡ <span className="chat__header-name">akash.planner</span>
+          <span className="chat__header-name">zenith</span>
         </span>
         <button className="chat__new-btn" onClick={handleNewConversation}>
           New chat
@@ -250,7 +248,7 @@ export default function Chat() {
       <div className="chat__messages">
         {messages.length === 0 && !loading && (
           <div className="chat__empty">
-            <span className="chat__empty-icon">⚡</span>
+            <span className="chat__empty-icon">⟡</span>
             <div className="chat__empty-greeting">Hey Akash</div>
             <div className="chat__empty-sub">What's on your mind?</div>
             <div className="chat__quick-actions">

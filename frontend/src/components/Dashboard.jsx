@@ -24,19 +24,13 @@ const DOT_COLORS = {
   purple: 'var(--accent)',
 }
 
-function priorityColor(priority) {
-  if (priority >= 80) return 'var(--red)'
-  if (priority >= 50) return 'var(--amber)'
-  return 'var(--green)'
+function priorityLevel(priority) {
+  if (priority >= 80) return 'high'
+  if (priority >= 50) return 'mid'
+  return 'low'
 }
 
-function cognitiveLoadDot(load) {
-  if (load === 'high') return '🔴'
-  if (load === 'medium') return '🟡'
-  return '🟢'
-}
-
-function dueDateStatus(dueDateStr) {
+function dueDateInfo(dueDateStr) {
   if (!dueDateStr) return null
   const due = new Date(dueDateStr)
   const now = new Date()
@@ -44,15 +38,15 @@ function dueDateStatus(dueDateStr) {
   const diffDays = diffMs / (1000 * 60 * 60 * 24)
 
   if (diffDays < 0) {
-    return { label: `Overdue (${due.toLocaleDateString()})`, cls: 'item-card__due--overdue' }
+    return { label: `Overdue (${due.toLocaleDateString()})`, level: 'overdue' }
   }
   if (diffDays <= 1) {
-    return { label: 'DUE TODAY', cls: 'item-card__due--today' }
+    return { label: 'Due today', level: 'urgent' }
   }
-  if (diffDays <= 3) {
-    return { label: `Due ${due.toLocaleDateString()}`, cls: 'item-card__due--soon' }
+  if (diffDays <= 7) {
+    return { label: `Due ${due.toLocaleDateString()}`, level: 'soon' }
   }
-  return { label: `Due ${due.toLocaleDateString()}`, cls: 'item-card__due--ok' }
+  return null
 }
 
 function ItemCard({ item, onUpdate }) {
@@ -82,56 +76,52 @@ function ItemCard({ item, onUpdate }) {
     [item, onUpdate],
   )
 
-  const dueStatus = dueDateStatus(item.due_date)
+  const dueInfo = dueDateInfo(item.due_date)
   const isDone = item.status === 'done'
   const isArchived = item.status === 'archived'
-  const pColor = priorityColor(item.priority ?? 0)
+  const pLevel = priorityLevel(item.priority ?? 0)
   const progress = item.progress_percent ?? 0
+  const visibleTags = (item.tags || []).slice(0, 2)
+  const extraTags = Math.max(0, (item.tags || []).length - 2)
+
+  const metaParts = [
+    item.category ? item.category.replace('_', ' ') : null,
+    item.item_type ? item.item_type.replace('_', ' ') : null,
+    item.effort_minutes ? `${item.effort_minutes}m` : null,
+  ].filter(Boolean).join(' · ')
 
   return (
     <div className="item-card">
-      {/* Left priority band */}
-      <div className="item-card__band" style={{ background: pColor }} />
+      <div className="item-card__top">
+        <h3 className="item-card__title">{item.title}</h3>
+        <span className={`item-card__priority item-card__priority--${pLevel}`}>
+          p{item.priority}
+        </span>
+      </div>
 
-      <div className="item-card__body">
-        <div className="item-card__title">{item.title}</div>
+      {metaParts && (
+        <div className="item-card__meta">{metaParts}</div>
+      )}
 
-        <div className="item-card__meta">
-          {item.category && (
-            <span className="item-card__meta-tag">{item.category.replace('_', ' ')}</span>
-          )}
-          {item.item_type && (
-            <span className="item-card__meta-tag">{item.item_type.replace('_', ' ')}</span>
-          )}
-          {item.effort_minutes && (
-            <span className="item-card__meta-tag">{item.effort_minutes}m</span>
-          )}
-          {item.cognitive_load && (
-            <span title={`Cognitive load: ${item.cognitive_load}`}>
-              {cognitiveLoadDot(item.cognitive_load)}
-            </span>
+      {dueInfo && (
+        <div className={`item-card__due item-card__due--${dueInfo.level}`}>
+          {dueInfo.label}
+        </div>
+      )}
+
+      {visibleTags.length > 0 && (
+        <div className="item-card__tags">
+          {visibleTags.map((t) => (
+            <span key={t} className="item-card__tag">{t}</span>
+          ))}
+          {extraTags > 0 && (
+            <span className="item-card__tag item-card__tag--more">+{extraTags}</span>
           )}
         </div>
+      )}
 
-        {dueStatus && (
-          <div className={`item-card__due ${dueStatus.cls}`}>{dueStatus.label}</div>
-        )}
-
-        {item.tags && item.tags.length > 0 && (
-          <div className="item-card__tags">
-            {item.tags.map((tag, i) => (
-              <span key={i} className="item-card__tag">#{tag}</span>
-            ))}
-          </div>
-        )}
-
-        {progress > 0 && (
-          <div className="item-card__progress-track">
-            <div className="item-card__progress-bar" style={{ width: `${progress}%` }} />
-          </div>
-        )}
-
-        {!isArchived && (
+      {!isArchived && (
+        <div className="item-card__footer">
           <div className="item-card__actions">
             {isDone ? (
               <button
@@ -162,8 +152,14 @@ function ItemCard({ item, onUpdate }) {
               </>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {progress > 0 && (
+        <div className="item-card__progress-bar">
+          <div style={{ width: `${progress}%` }} />
+        </div>
+      )}
     </div>
   )
 }

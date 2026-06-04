@@ -5,9 +5,9 @@ import Capture from './components/Capture'
 import './App.css'
 
 const TABS = [
-  { id: 'chat', label: 'Chat', icon: '💬' },
-  { id: 'dashboard', label: 'Dashboard', icon: '📋' },
-  { id: 'capture', label: 'Capture', icon: '✚' },
+  { id: 'chat',      label: 'Chat',  icon: '💬' },
+  { id: 'dashboard', label: 'Tasks', icon: '✦'  },
+  { id: 'capture',   label: 'Add',   icon: '✚'  },
 ]
 
 export default function App() {
@@ -18,8 +18,11 @@ export default function App() {
       {/* Desktop sidebar */}
       <aside className="sidebar">
         <div className="sidebar__brand">
-          <span className="sidebar__logo">⚡</span>
-          <span className="sidebar__title">akash.planner</span>
+          <span className="sidebar__logo">⟡</span>
+          <div>
+            <div className="sidebar__name">zenith</div>
+            <div className="sidebar__tagline">your planner</div>
+          </div>
         </div>
         <nav className="sidebar__nav">
           {TABS.map((tab) => (
@@ -33,16 +36,13 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar__footer">
-          powered by groq
-        </div>
       </aside>
 
       {/* Main content */}
       <main className="main">
-        {activeTab === 'chat' && <Chat />}
+        {activeTab === 'chat'      && <Chat />}
         {activeTab === 'dashboard' && <Dashboard />}
-        {activeTab === 'capture' && <Capture />}
+        {activeTab === 'capture'   && <Capture />}
       </main>
 
       {/* Mobile bottom tab bar */}

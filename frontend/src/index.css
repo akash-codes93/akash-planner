@@ -1,22 +1,27 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap');
 
 :root {
-  --bg:             #0a0a0a;
-  --bg-surface:     #141414;
-  --bg-elevated:    #1e1e1e;
-  --border:         #2a2a2a;
-  --border-bright:  #3a3a3a;
-  --text:           #f0f0f0;
-  --text-muted:     #666;
-  --accent:         #7c6af7;
-  --accent-dim:     #5b4fd4;
-  --red:            #ef4444;
-  --amber:          #f59e0b;
-  --green:          #22c55e;
+  --accent:         #8b5cf6;
+  --accent-dim:     #6d28d9;
+  --accent-glow:    rgba(139, 92, 246, 0.25);
   --blue:           #3b82f6;
+  --green:          #22c55e;
+  --amber:          #f59e0b;
+  --red:            #ef4444;
   --pink:           #ec4899;
+
+  --glass:          rgba(255, 255, 255, 0.04);
+  --glass-hover:    rgba(255, 255, 255, 0.08);
+  --glass-border:   rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.18);
+
+  --text:           #f0f0f0;
+  --text-muted:     #8a8a9a;
+  --text-subtle:    #555568;
+
   --font-body:      'Inter', system-ui, sans-serif;
   --font-mono:      'IBM Plex Mono', monospace;
+
   --radius-sm:      6px;
   --radius-md:      12px;
   --radius-lg:      20px;
@@ -37,7 +42,9 @@ body {
 }
 
 body {
-  background: var(--bg);
+  background: linear-gradient(135deg, #0d0d1a 0%, #090910 45%, #0e0918 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
   color: var(--text);
   font-family: var(--font-body);
   font-size: 14px;
@@ -73,7 +80,7 @@ a {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
