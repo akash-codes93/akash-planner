@@ -37,9 +37,10 @@ load_dotenv()
 def _get_llm():
     """Return a configured LLM instance based on LLM_PROVIDER env var.
 
-    "ollama"  → ChatOllama (local, requires `ollama serve` running)
-    "groq"    → ChatGroq  (cloud, requires GROQ_API_KEY)
-    "gemini"  → ChatGoogleGenerativeAI (cloud, requires GEMINI_API_KEY, 1M tokens/day free)
+    "ollama"   → ChatOllama (local, requires `ollama serve` running)
+    "groq"     → ChatGroq  (cloud, requires GROQ_API_KEY)
+    "gemini"   → ChatGoogleGenerativeAI (cloud, requires GEMINI_API_KEY, 1M tokens/day free)
+    "mistral"  → ChatMistralAI (cloud, requires MISTRAL_API_KEY, free tier at console.mistral.ai)
 
     Raises:
         ValueError: if LLM_PROVIDER is not one of the supported values.
@@ -74,8 +75,17 @@ def _get_llm():
             )
         return ChatGroq(model=model, api_key=api_key, temperature=0)
 
+    if provider == "mistral":
+        from langchain_mistralai import ChatMistralAI
+
+        model = os.environ.get("MISTRAL_MODEL", "mistral-small-latest")
+        api_key = os.environ.get("MISTRAL_API_KEY", "")
+        if not api_key:
+            raise ValueError("MISTRAL_API_KEY not set.")
+        return ChatMistralAI(model=model, api_key=api_key, temperature=0)
+
     raise ValueError(
-        f"Unsupported LLM_PROVIDER='{provider}'. Use 'ollama' or 'groq'."
+        f"Unsupported LLM_PROVIDER='{provider}'. Use 'ollama', 'groq', 'gemini', or 'mistral'."
     )
 
 

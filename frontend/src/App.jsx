@@ -7,7 +7,7 @@ import './App.css'
 const TABS = [
   { id: 'chat', label: 'Chat', icon: '💬' },
   { id: 'dashboard', label: 'Dashboard', icon: '📋' },
-  { id: 'capture', label: 'Capture', icon: '✏️' },
+  { id: 'capture', label: 'Capture', icon: '✚' },
 ]
 
 export default function App() {
@@ -33,6 +33,9 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="sidebar__footer">
+          powered by groq
+        </div>
       </aside>
 
       {/* Main content */}
@@ -52,6 +55,7 @@ export default function App() {
           >
             <span className="bottom-nav__icon">{tab.icon}</span>
             <span className="bottom-nav__label">{tab.label}</span>
+            {activeTab === tab.id && <span className="bottom-nav__dot" />}
           </button>
         ))}
       </nav>

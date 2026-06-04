@@ -140,28 +140,18 @@ def save_messages(thread_id: str, messages: list) -> None:
             )
 
         elif isinstance(msg, AIMessage):
-            tool_calls_val = None
+            # Only save the final answer — discard intermediate steps that have tool_calls
             if msg.tool_calls:
-                tool_calls_val = json.dumps(msg.tool_calls)
+                continue
             rows.append(
                 {
                     "thread_id": thread_id,
                     "role": "assistant",
                     "content": msg.content if isinstance(msg.content, str) else str(msg.content),
-                    "tool_calls": tool_calls_val,
                 }
             )
 
-        elif isinstance(msg, ToolMessage):
-            rows.append(
-                {
-                    "thread_id": thread_id,
-                    "role": "tool",
-                    "content": msg.content if isinstance(msg.content, str) else str(msg.content),
-                    "tool_call_id": getattr(msg, "tool_call_id", ""),
-                    "tool_name": getattr(msg, "name", ""),
-                }
-            )
+        # ToolMessage rows (observations) are intentionally discarded
 
     if rows:
         try:

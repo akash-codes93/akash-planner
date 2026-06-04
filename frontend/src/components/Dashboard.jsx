@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 
 const CATEGORIES = [
-  { id: null, label: 'All' },
-  { id: 'work', label: 'Work' },
-  { id: 'interview_prep', label: 'Interview Prep' },
-  { id: 'learning', label: 'Learning' },
-  { id: 'personal', label: 'Personal' },
-  { id: 'hobby', label: 'Hobby' },
+  { id: null, label: 'All', dot: null },
+  { id: 'work', label: 'Work', dot: 'blue' },
+  { id: 'interview_prep', label: 'Interview', dot: 'amber' },
+  { id: 'learning', label: 'Learning', dot: 'green' },
+  { id: 'personal', label: 'Personal', dot: 'pink' },
+  { id: 'hobby', label: 'Hobby', dot: 'purple' },
 ]
 
 const STATUS_FILTERS = [
@@ -16,10 +16,18 @@ const STATUS_FILTERS = [
   { id: 'all', label: 'All' },
 ]
 
-function priorityClass(priority) {
-  if (priority >= 80) return 'item-card__priority--high'
-  if (priority >= 50) return 'item-card__priority--medium'
-  return 'item-card__priority--low'
+const DOT_COLORS = {
+  blue:   'var(--blue)',
+  amber:  'var(--amber)',
+  green:  'var(--green)',
+  pink:   'var(--pink)',
+  purple: 'var(--accent)',
+}
+
+function priorityColor(priority) {
+  if (priority >= 80) return 'var(--red)'
+  if (priority >= 50) return 'var(--amber)'
+  return 'var(--green)'
 }
 
 function cognitiveLoadDot(load) {
@@ -37,6 +45,9 @@ function dueDateStatus(dueDateStr) {
 
   if (diffDays < 0) {
     return { label: `Overdue (${due.toLocaleDateString()})`, cls: 'item-card__due--overdue' }
+  }
+  if (diffDays <= 1) {
+    return { label: 'DUE TODAY', cls: 'item-card__due--today' }
   }
   if (diffDays <= 3) {
     return { label: `Due ${due.toLocaleDateString()}`, cls: 'item-card__due--soon' }
@@ -64,7 +75,6 @@ function ItemCard({ item, onUpdate }) {
 
       if (error) {
         console.error('Update failed:', error)
-        // Revert on error
         onUpdate(item)
       }
       setBusy(false)
@@ -75,76 +85,85 @@ function ItemCard({ item, onUpdate }) {
   const dueStatus = dueDateStatus(item.due_date)
   const isDone = item.status === 'done'
   const isArchived = item.status === 'archived'
+  const pColor = priorityColor(item.priority ?? 0)
+  const progress = item.progress_percent ?? 0
 
   return (
     <div className="item-card">
-      <div className="item-card__top">
-        <span className={`item-card__priority ${priorityClass(item.priority ?? 0)}`}>
-          {item.priority ?? 0}
-        </span>
-        <span className="item-card__title">{item.title}</span>
-      </div>
+      {/* Left priority band */}
+      <div className="item-card__band" style={{ background: pColor }} />
 
-      <div className="item-card__meta">
-        {item.category && (
-          <span className="item-card__pill">{item.category.replace('_', ' ')}</span>
-        )}
-        {item.item_type && (
-          <span className="item-card__pill">{item.item_type.replace('_', ' ')}</span>
-        )}
-        {item.effort_minutes && (
-          <span className="item-card__effort">{item.effort_minutes}m</span>
-        )}
-        {item.cognitive_load && (
-          <span className="item-card__load" title={`Cognitive load: ${item.cognitive_load}`}>
-            {cognitiveLoadDot(item.cognitive_load)}
-          </span>
-        )}
-        {dueStatus && (
-          <span className={`item-card__due ${dueStatus.cls}`}>{dueStatus.label}</span>
-        )}
-      </div>
+      <div className="item-card__body">
+        <div className="item-card__title">{item.title}</div>
 
-      {item.tags && item.tags.length > 0 && (
-        <div className="item-card__tags">
-          {item.tags.map((tag, i) => (
-            <span key={i} className="item-card__tag">#{tag}</span>
-          ))}
-        </div>
-      )}
-
-      {!isArchived && (
-        <div className="item-card__actions">
-          {isDone ? (
-            <button
-              className="item-card__action-btn item-card__action-btn--reopen"
-              onClick={() => handleAction('backlog')}
-              disabled={busy}
-            >
-              ↩ Reopen
-            </button>
-          ) : (
-            <>
-              {item.status !== 'in_progress' && (
-                <button
-                  className="item-card__action-btn item-card__action-btn--start"
-                  onClick={() => handleAction('in_progress')}
-                  disabled={busy}
-                >
-                  ▶ Start
-                </button>
-              )}
-              <button
-                className="item-card__action-btn item-card__action-btn--done"
-                onClick={() => handleAction('done')}
-                disabled={busy}
-              >
-                ✓ Done
-              </button>
-            </>
+        <div className="item-card__meta">
+          {item.category && (
+            <span className="item-card__meta-tag">{item.category.replace('_', ' ')}</span>
+          )}
+          {item.item_type && (
+            <span className="item-card__meta-tag">{item.item_type.replace('_', ' ')}</span>
+          )}
+          {item.effort_minutes && (
+            <span className="item-card__meta-tag">{item.effort_minutes}m</span>
+          )}
+          {item.cognitive_load && (
+            <span title={`Cognitive load: ${item.cognitive_load}`}>
+              {cognitiveLoadDot(item.cognitive_load)}
+            </span>
           )}
         </div>
-      )}
+
+        {dueStatus && (
+          <div className={`item-card__due ${dueStatus.cls}`}>{dueStatus.label}</div>
+        )}
+
+        {item.tags && item.tags.length > 0 && (
+          <div className="item-card__tags">
+            {item.tags.map((tag, i) => (
+              <span key={i} className="item-card__tag">#{tag}</span>
+            ))}
+          </div>
+        )}
+
+        {progress > 0 && (
+          <div className="item-card__progress-track">
+            <div className="item-card__progress-bar" style={{ width: `${progress}%` }} />
+          </div>
+        )}
+
+        {!isArchived && (
+          <div className="item-card__actions">
+            {isDone ? (
+              <button
+                className="item-card__action-btn item-card__action-btn--reopen"
+                onClick={() => handleAction('backlog')}
+                disabled={busy}
+              >
+                ↩ Reopen
+              </button>
+            ) : (
+              <>
+                {item.status !== 'in_progress' && (
+                  <button
+                    className="item-card__action-btn item-card__action-btn--start"
+                    onClick={() => handleAction('in_progress')}
+                    disabled={busy}
+                  >
+                    ▶ Start
+                  </button>
+                )}
+                <button
+                  className="item-card__action-btn item-card__action-btn--done"
+                  onClick={() => handleAction('done')}
+                  disabled={busy}
+                >
+                  ✓ Done
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -164,7 +183,6 @@ export default function Dashboard() {
     } else if (statusFilter === 'done') {
       query = query.eq('status', 'done')
     }
-    // 'all' — no status filter
 
     if (categoryFilter) {
       query = query.eq('category', categoryFilter)
@@ -210,8 +228,7 @@ export default function Dashboard() {
   return (
     <div className="dashboard">
       <div className="dashboard__header">
-        <div className="dashboard__title">items</div>
-
+        {/* Category filter */}
         <div className="dashboard__filters">
           {CATEGORIES.map((cat) => (
             <button
@@ -219,11 +236,18 @@ export default function Dashboard() {
               className={`dashboard__filter-btn ${categoryFilter === cat.id ? 'dashboard__filter-btn--active' : ''}`}
               onClick={() => setCategoryFilter(cat.id)}
             >
+              {cat.dot && (
+                <span
+                  className="dashboard__filter-dot"
+                  style={{ background: DOT_COLORS[cat.dot] }}
+                />
+              )}
               {cat.label}
             </button>
           ))}
         </div>
 
+        {/* Status row */}
         <div className="dashboard__status-row">
           {STATUS_FILTERS.map((sf) => (
             <button
@@ -240,14 +264,14 @@ export default function Dashboard() {
       <div className="dashboard__content">
         {loading ? (
           <div className="dashboard__loading">
-            {[1, 2, 3, 4].map((i) => (
+            {[1, 2, 3].map((i) => (
               <div key={i} className="skeleton" />
             ))}
           </div>
         ) : items.length === 0 ? (
           <div className="dashboard__empty">
-            <span className="dashboard__empty-icon">📭</span>
-            <div>No items. Add one in Capture or chat with the agent.</div>
+            <div className="dashboard__empty-icon">📭</div>
+            <div>No items here. Add one in <strong>Capture ✚</strong> or chat.</div>
           </div>
         ) : (
           <div className="dashboard__grid">

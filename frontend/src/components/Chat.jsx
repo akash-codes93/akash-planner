@@ -20,52 +20,127 @@ function getOrCreateThreadId() {
   return id
 }
 
-const STEP_LABELS = {
-  thought: '🧠 Thought',
-  action: '⚡ Action',
-  observation: '👁 Observation',
-  answer: '✅ Answer',
+// Inline markdown renderer — no external deps
+function renderMarkdown(text) {
+  if (!text) return []
+
+  const lines = text.split('\n')
+  const elements = []
+  let listItems = []
+  let orderedItems = []
+  let key = 0
+
+  function flushList() {
+    if (listItems.length > 0) {
+      elements.push(
+        <ul key={key++} className="chat__md-list">
+          {listItems.map((item, i) => (
+            <li key={i}>{renderInline(item)}</li>
+          ))}
+        </ul>
+      )
+      listItems = []
+    }
+    if (orderedItems.length > 0) {
+      elements.push(
+        <ol key={key++} className="chat__md-list chat__md-list--ordered">
+          {orderedItems.map((item, i) => (
+            <li key={i}>{renderInline(item)}</li>
+          ))}
+        </ol>
+      )
+      orderedItems = []
+    }
+  }
+
+  function renderInline(str) {
+    // Split on bold (**text**) and code (`code`)
+    const parts = str.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={i}>{part.slice(2, -2)}</strong>
+      }
+      if (part.startsWith('`') && part.endsWith('`')) {
+        return <code key={i} className="chat__md-code">{part.slice(1, -1)}</code>
+      }
+      return part
+    })
+  }
+
+  for (const line of lines) {
+    // Unordered list
+    const ulMatch = line.match(/^[-•*]\s+(.+)/)
+    if (ulMatch) {
+      flushList()
+      listItems.push(ulMatch[1])
+      continue
+    }
+    // Ordered list
+    const olMatch = line.match(/^\d+\.\s+(.+)/)
+    if (olMatch) {
+      flushList()
+      orderedItems.push(olMatch[1])
+      continue
+    }
+
+    flushList()
+
+    if (line.trim() === '') {
+      elements.push(<br key={key++} />)
+    } else {
+      elements.push(
+        <p key={key++} className="chat__md-p">
+          {renderInline(line)}
+        </p>
+      )
+    }
+  }
+
+  flushList()
+  return elements
 }
 
-function Step({ step }) {
-  const label = step.type === 'action' && step.tool_name
-    ? `⚡ Action: ${step.tool_name}`
-    : STEP_LABELS[step.type] || step.type
+function MessageBubble({ msg }) {
+  const time = msg.timestamp
+    ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null
 
-  return (
-    <div className={`step step--${step.type}`}>
-      <div className="step__label">{label}</div>
-      <div className="step__content">{step.content}</div>
-      {step.type === 'action' && step.tool_input && (
-        <pre className="step__code">
-          {JSON.stringify(step.tool_input, null, 2)}
-        </pre>
-      )}
-    </div>
-  )
-}
-
-function Message({ msg }) {
   if (msg.role === 'user') {
     return (
       <div className="chat__message chat__message--user">
         <div className="chat__bubble chat__bubble--user">{msg.content}</div>
+        {time && <span className="chat__timestamp">{time}</span>}
       </div>
     )
   }
 
   return (
     <div className="chat__message chat__message--agent">
-      {msg.visibleSteps && msg.visibleSteps.length > 0 && (
-        <div className="chat__steps">
-          {msg.visibleSteps.map((step, i) => (
-            <Step key={i} step={step} />
-          ))}
-        </div>
-      )}
+      <div className="chat__bubble chat__bubble--agent">
+        {renderMarkdown(msg.content)}
+      </div>
+      {time && <span className="chat__timestamp">{time}</span>}
     </div>
   )
 }
+
+function LoadingBubble() {
+  return (
+    <div className="chat__message chat__message--agent">
+      <div className="chat__bubble chat__bubble--agent chat__bubble--loading">
+        <span className="chat__dot" />
+        <span className="chat__dot" />
+        <span className="chat__dot" />
+      </div>
+    </div>
+  )
+}
+
+const QUICK_ACTIONS = [
+  'What should I do now?',
+  'Plan my morning',
+  'Add a task',
+]
 
 export default function Chat() {
   const [messages, setMessages] = useState([])
@@ -84,49 +159,29 @@ export default function Chat() {
 
   useEffect(() => {
     scrollToBottom()
-  }, [messages, scrollToBottom])
+  }, [messages, loading, scrollToBottom])
 
-  const animateSteps = useCallback((steps, msgIndex) => {
-    steps.forEach((step, i) => {
-      setTimeout(() => {
-        setMessages((prev) => {
-          const updated = [...prev]
-          const target = updated[msgIndex]
-          if (!target) return prev
-          updated[msgIndex] = {
-            ...target,
-            visibleSteps: [...(target.visibleSteps || []), step],
-          }
-          return updated
-        })
-      }, i * 150)
-    })
-  }, [])
-
-  const sendMessage = useCallback(async () => {
-    const text = input.trim()
-    if (!text || loading) return
+  const sendMessage = useCallback(async (text) => {
+    const msgText = (text || input).trim()
+    if (!msgText || loading) return
 
     setInput('')
     setError(null)
 
-    const userMsg = { role: 'user', content: text }
+    // Reset textarea height
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+    }
+
+    const userMsg = { id: generateUUID(), role: 'user', content: msgText, timestamp: new Date() }
     setMessages((prev) => [...prev, userMsg])
-
     setLoading(true)
-
-    // Placeholder for agent message — steps fill in progressively
-    const agentMsgIndex = messages.length + 1
-    setMessages((prev) => [
-      ...prev,
-      { role: 'agent', content: '', visibleSteps: [], allSteps: [] },
-    ])
 
     try {
       const res = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, thread_id: threadId }),
+        body: JSON.stringify({ message: msgText, thread_id: threadId }),
       })
 
       if (!res.ok) {
@@ -135,29 +190,19 @@ export default function Chat() {
       }
 
       const data = await res.json()
-      const allSteps = [...(data.steps || [])]
-
-      // Update with all steps stored, then animate visible ones
-      setMessages((prev) => {
-        const updated = [...prev]
-        updated[agentMsgIndex] = {
-          role: 'agent',
-          content: data.answer || '',
-          visibleSteps: [],
-          allSteps,
-        }
-        return updated
-      })
-
-      animateSteps(allSteps, agentMsgIndex)
+      const agentMsg = {
+        id: generateUUID(),
+        role: 'agent',
+        content: data.answer || '',
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, agentMsg])
     } catch (err) {
       setError(err.message || 'Failed to reach the agent. Is the backend running?')
-      // Remove the empty placeholder
-      setMessages((prev) => prev.slice(0, -1))
     } finally {
       setLoading(false)
     }
-  }, [input, loading, messages.length, threadId, animateSteps])
+  }, [input, loading, threadId])
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -179,77 +224,81 @@ export default function Chat() {
     textareaRef.current?.focus()
   }, [])
 
-  // Auto-resize textarea
   const handleInput = useCallback((e) => {
     setInput(e.target.value)
     e.target.style.height = 'auto'
-    e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px'
+    e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
   }, [])
+
+  const handleQuickAction = useCallback((text) => {
+    sendMessage(text)
+  }, [sendMessage])
 
   return (
     <div className="chat">
+      {/* Header */}
       <div className="chat__header">
         <span className="chat__header-title">
-          thread / {threadId.slice(0, 8)}…
+          ⚡ <span className="chat__header-name">akash.planner</span>
         </span>
         <button className="chat__new-btn" onClick={handleNewConversation}>
-          + new conversation
+          New chat
         </button>
       </div>
 
+      {/* Messages */}
       <div className="chat__messages">
         {messages.length === 0 && !loading && (
           <div className="chat__empty">
             <span className="chat__empty-icon">⚡</span>
-            <div className="chat__empty-title">What should I work on?</div>
-            <div className="chat__empty-hint">
-              Ask the agent to plan your day, add tasks, or suggest what to
-              do next based on your energy level.
+            <div className="chat__empty-greeting">Hey Akash</div>
+            <div className="chat__empty-sub">What's on your mind?</div>
+            <div className="chat__quick-actions">
+              {QUICK_ACTIONS.map((action) => (
+                <button
+                  key={action}
+                  className="chat__quick-chip"
+                  onClick={() => handleQuickAction(action)}
+                >
+                  {action}
+                </button>
+              ))}
             </div>
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <Message key={i} msg={msg} />
+        {messages.map((msg) => (
+          <MessageBubble key={msg.id} msg={msg} />
         ))}
 
-        {loading && (
-          <div className="chat__message chat__message--agent">
-            <div className="chat__loading">
-              <div className="chat__loading-dots">
-                <span className="chat__loading-dot" />
-                <span className="chat__loading-dot" />
-                <span className="chat__loading-dot" />
-              </div>
-              reasoning…
-            </div>
-          </div>
-        )}
+        {loading && <LoadingBubble />}
 
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Error */}
       {error && (
         <div className="chat__error" role="alert">
           {error}
         </div>
       )}
 
+      {/* Input area */}
       <div className="chat__input-area">
-        <div className="chat__input-row">
+        <div className="chat__input-wrap">
           <textarea
             ref={textareaRef}
             className="chat__textarea"
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder="Ask anything… (Enter to send, Shift+Enter for newline)"
+            placeholder="Ask anything… (Enter to send)"
             rows={1}
             disabled={loading}
           />
           <button
             className="chat__send-btn"
-            onClick={sendMessage}
+            onClick={() => sendMessage()}
             disabled={loading || !input.trim()}
             aria-label="Send"
           >
