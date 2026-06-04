@@ -26,16 +26,15 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from db.supabase_client import get_supabase
 
 
-def load_conversation(thread_id: str) -> list:
-    """Load all messages for a thread from Supabase, ordered oldest-first.
+def load_conversation(thread_id: str, last_n: int = 6) -> list:
+    """Load the most recent messages for a thread from Supabase, oldest-first.
 
-    Converts each database row back to the correct LangChain message type:
-        role=user      → HumanMessage
-        role=assistant → AIMessage (with tool_calls if present)
-        role=tool      → ToolMessage
+    Limits to last_n messages to keep token usage bounded — full history
+    grows unbounded and will exceed model TPM/TPD limits.
 
     Args:
         thread_id: The session identifier used when the messages were saved.
+        last_n:    Max messages to load (default 20, ~2-3 conversation turns).
 
     Returns:
         List of LangChain message objects in chronological order.
@@ -47,9 +46,13 @@ def load_conversation(thread_id: str) -> list:
             db.table("conversations")
             .select("*")
             .eq("thread_id", thread_id)
-            .order("created_at", desc=False)
+            .order("created_at", desc=True)
+            .limit(last_n)
             .execute()
         )
+        # Results came back newest-first; reverse to get chronological order
+        if result.data:
+            result.data.reverse()
         rows = result.data or []
     except Exception:
         return []

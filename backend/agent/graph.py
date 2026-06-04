@@ -37,8 +37,9 @@ load_dotenv()
 def _get_llm():
     """Return a configured LLM instance based on LLM_PROVIDER env var.
 
-    "ollama" → ChatOllama (local, requires `ollama serve` running)
-    "groq"   → ChatGroq  (cloud, requires GROQ_API_KEY)
+    "ollama"  → ChatOllama (local, requires `ollama serve` running)
+    "groq"    → ChatGroq  (cloud, requires GROQ_API_KEY)
+    "gemini"  → ChatGoogleGenerativeAI (cloud, requires GEMINI_API_KEY, 1M tokens/day free)
 
     Raises:
         ValueError: if LLM_PROVIDER is not one of the supported values.
@@ -50,6 +51,17 @@ def _get_llm():
 
         model = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
         return ChatOllama(model=model, temperature=0)
+
+    if provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            raise ValueError(
+                "GEMINI_API_KEY is not set. Get a free key at aistudio.google.com."
+            )
+        return ChatGoogleGenerativeAI(model=model, google_api_key=api_key, temperature=0)
 
     if provider == "groq":
         from langchain_groq import ChatGroq
