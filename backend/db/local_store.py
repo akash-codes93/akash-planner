@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import urllib.error
 import urllib.request
@@ -698,6 +699,113 @@ Command: {text}
         return None
 
 
+
+def _goal_title(goal_id: str | None) -> str | None:
+    if not goal_id:
+        return None
+    goal = get_goal(goal_id)
+    return goal.get("title") if goal else None
+
+
+def _strip_goal_and_date_phrases(value: str, goal_id: str | None) -> str:
+    title = " ".join(value.replace("\n", " ").split())
+    goal_title = _goal_title(goal_id)
+    if goal_title:
+        for phrase in (
+            f"under {goal_title}",
+            f"in {goal_title}",
+            f"inside {goal_title}",
+            f"for {goal_title}",
+        ):
+            title = title.replace(phrase, "")
+            title = title.replace(phrase.title(), "")
+    title = re.sub(
+        r"\bunder\s+.+?\s+(?:to\s+)?(?=(study|read|prepare|plan|write|review|fix|build|learn|understand)\b)",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    lowered = title.lower()
+    for marker in (" by next ", " before next ", " due next ", " by tomorrow", " by today", " due tomorrow", " due today"):
+        idx = lowered.find(marker)
+        if idx != -1:
+            title = title[:idx]
+            lowered = title.lower()
+    for phrase in ("deeply", "properly", "in detail", "for interviews", "for interview", "for me"):
+        title = title.replace(phrase, "").replace(phrase.title(), "")
+    return " ".join(title.strip(" :-.").split())
+
+
+def _looks_like_raw_command(candidate: str, original: str) -> bool:
+    cleaned = candidate.strip().lower()
+    source = original.strip().lower()
+    if not cleaned:
+        return True
+    if cleaned == source:
+        return True
+    if len(candidate) > 72:
+        return True
+    command_fragments = (
+        "create task",
+        "add task",
+        "under ",
+        "inside ",
+        "by next",
+        "due next",
+        "i need to",
+        "i want to",
+        "can you",
+        "please",
+    )
+    return any(fragment in cleaned for fragment in command_fragments)
+
+
+def _clean_task_title(text: str, candidate: str | None, goal_id: str | None) -> str:
+    source = candidate or text
+    if candidate and _looks_like_raw_command(candidate, text):
+        source = text
+    title = source.strip()
+    lower = title.lower()
+    for prefix in (
+        "create a task to",
+        "create task to",
+        "create a task",
+        "create task",
+        "add a task to",
+        "add task to",
+        "add a task",
+        "add task",
+        "i need to",
+        "i want to",
+        "please",
+    ):
+        if lower.startswith(prefix):
+            title = title[len(prefix):].strip(" :-")
+            lower = title.lower()
+            break
+    title = _strip_goal_and_date_phrases(title, goal_id)
+    lower = title.lower()
+
+    if "difference between" in lower:
+        topic = title[lower.find("difference between") + len("difference between"):].strip(" :-")
+        topic = topic.replace(" and ", " vs ")
+        title = f"Study {topic}"
+    elif "payment system design" in lower:
+        title = "Study payment system design" if any(word in lower for word in ("study", "understand", "learn")) else "Prepare payment system design"
+    elif "next sprint" in lower:
+        title = "Plan next sprint"
+    elif lower.startswith(("understand ", "learn ", "read ", "revise ", "practice ")):
+        verb, rest = title.split(" ", 1)
+        title = f"Study {rest}" if verb.lower() in {"understand", "learn", "read", "revise"} else title
+    elif not lower.startswith(("study ", "prepare ", "plan ", "write ", "review ", "fix ", "build ", "create ")):
+        title = f"Study {title}" if any(word in lower for word in ("redis", "system design", "database", "kafka")) else title
+
+    title = " ".join(title.strip(" :-.").split())
+    if len(title) > 70:
+        title = title[:67].rstrip() + "..."
+    return title[:1].upper() + title[1:] if title else "Untitled task"
+
+
 def _infer_task_payload(text: str, context: dict[str, Any]) -> dict[str, Any]:
     cleaned = text.strip()
     lower = cleaned.lower()
@@ -733,8 +841,7 @@ def _infer_task_payload(text: str, context: dict[str, Any]) -> dict[str, Any]:
         estimate = 25
         priority = max(priority, 65)
 
-    title = cleaned[:70].strip() or "Untitled task"
-    title = title[0].upper() + title[1:] if title else title
+    title = _clean_task_title(text, cleaned, goal_id)
     description = (
         f"Work on: {cleaned}. Capture notes, progress, and next action when the focus session ends."
         if cleaned
@@ -762,7 +869,7 @@ def _normalize_task_payload(payload: dict[str, Any], text: str, context: dict[st
     fallback = _infer_task_payload(text, context)
     goal_id = payload.get("goal_id") or context.get("goal_id") or _find_goal_id_by_title(payload.get("goal_title"))
     return {
-        "title": (payload.get("title") or fallback["title"])[:90],
+        "title": _clean_task_title(text, payload.get("title") or fallback["title"], goal_id or fallback.get("goal_id")),
         "goal_id": goal_id or fallback.get("goal_id"),
         "description": payload.get("description") or fallback["description"],
         "status": "backlog",

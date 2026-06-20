@@ -868,10 +868,30 @@ pre {
   white-space: nowrap;
 }
 
+.icon-button {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 253, 248, 0.8);
+  color: var(--teal-dark);
+  padding: 0;
+  font-size: 1.05rem;
+  line-height: 1;
+  box-shadow: 0 6px 16px rgba(20, 34, 45, 0.06);
+}
+
+.icon-button:hover {
+  border-color: rgba(31, 111, 104, 0.45);
+  background: #eef7f4;
+}
+
 .settings-intro {
   display: grid;
   gap: 4px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
   max-width: 620px;
 }
 
@@ -885,8 +905,14 @@ pre {
 }
 
 .goal-edit-form {
-  grid-template-columns: minmax(260px, 1.2fr) minmax(180px, 0.5fr) minmax(160px, 0.4fr);
+  grid-template-columns: minmax(280px, 1fr) 170px 120px;
   align-items: start;
+  max-width: 900px;
+}
+
+.goal-editor {
+  max-width: 980px;
+  padding: 22px;
 }
 
 .goal-edit-form input,
@@ -894,16 +920,18 @@ pre {
 .goal-edit-form textarea {
   min-height: 44px;
   border-radius: 10px;
+  border-color: #cfc7b8;
   background: #fffdf8;
+  box-shadow: inset 0 1px 0 rgba(20, 34, 45, 0.03);
 }
 
 .goal-edit-form textarea {
-  min-height: 140px;
+  min-height: 120px;
 }
 
 .goal-edit-form .form-actions {
-  justify-content: flex-end;
-  padding-top: 6px;
+  justify-content: flex-start;
+  padding-top: 2px;
 }
 
 .span-3 {

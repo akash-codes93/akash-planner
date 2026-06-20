@@ -497,7 +497,7 @@ function GoalPage({ goal, boardMode, setBoardMode, goalTaskTitle, setGoalTaskTit
         eyebrow="Goal"
         title={goal.title}
         subtitle={`${tasks.length} tasks · ${Math.round(goal.calculated_progress ?? goal.progress_percent ?? 0)}% complete`}
-        action={<button className="secondary-button" onClick={() => navigate(`/goals/${goal.id}/settings`)} type="button">Edit goal</button>}
+        action={<button aria-label="Edit goal" className="icon-button" onClick={() => navigate(`/goals/${goal.id}/settings`)} title="Edit goal" type="button">✎</button>}
       />
       <div className="goal-toolbar">
         <div className="segmented">
@@ -584,7 +584,7 @@ function GoalSettingsPage({ goal, updateGoal }) {
           </label>
           <div className="form-actions span-2">
             <button type="submit">Save goal</button>
-            <button className="secondary-button" onClick={() => navigate(`/goals/${goal.id}`)} type="button">Back to board</button>
+            <button className="secondary-button" onClick={() => navigate(`/goals/${goal.id}`)} type="button">Cancel</button>
           </div>
         </form>
       </section>
