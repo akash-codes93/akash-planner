@@ -89,7 +89,7 @@ def score_item(item: dict, context: dict) -> tuple[float, list[str]]:
     # ── Time overflow penalty ─────────────────────────────────────────────────
     effort_minutes: int | None = item.get("effort_minutes")
     available_minutes: int = context.get("available_minutes", 0)
-    if effort_minutes and available_minutes > 0 and effort_minutes > available_minutes:
+    if effort_minutes and 0 < available_minutes < effort_minutes:
         score -= 15
         reasons.append(f"-15 effort {effort_minutes}m > available {available_minutes}m")
 
