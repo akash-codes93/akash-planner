@@ -19,17 +19,44 @@ infra beyond what's in `local_store.py` / `server.py` today.
 
 ## Information Architecture
 
-- **Home = Today** (new default route). Sidebar becomes: `Today` · `Goals` ·
-  `Board` (existing goal/task board, demoted, still reachable) · `Settings`.
-- Goals remain a real structure (grouping, per-goal board/settings pages
-  unchanged) but are no longer the entry point. AI resolves `goal_id` for
-  captured tasks in the background; the user is never required to visit
-  Goals to capture or act.
+- **Home = Today** (new default route). Sidebar becomes: `Today` · `Board`
+  (flat filterable to-do list, replaces the old kanban board) · `Goals`
+  (settings/rollups only) · `Settings`.
+- Goals remain a real entity (progress rollups, per-goal settings unchanged)
+  but the UI never requires drilling into a goal page for daily use. Every
+  task shows its goal as a **tag chip**; any list (Today, Board) can be
+  filtered/sorted by tag. AI resolves `goal_id` for captured tasks in the
+  background — the user is never required to visit Goals to capture or act.
 - Today screen, top to bottom:
   1. Inbox capture bar — single input, always focused, pinned at top.
   2. Streak + heatmap strip — current streak, freeze status, ~90-day dot grid.
   3. Next actions — AI-picked 1–3 tasks to act on right now.
   4. Digest banner — collapsible one-liner summary, closed by default.
+
+## Task Completion Model (To-Do Style)
+
+- Every task row has a checkbox. Checking it strikes through the title and
+  sets status to `done` in one action — no separate "mark complete" control.
+- A task may have a **subtask checklist** — small indented to-dos, expandable
+  under the task row. Checking a subtask strikes it through.
+- **Auto-complete**: when the last subtask is checked, the parent task
+  auto-completes (strikethrough + `done`), no extra tap required.
+- This checklist is also the landing spot for the AI subtask-breakdown
+  capability (see AI Capabilities below) — AI-proposed subtasks populate the
+  same checklist structure, not a separate UI.
+- Data model: subtasks are child tasks (`parent_task_id` on the existing
+  `tasks` table) rather than a new entity — reuses `create_task`/
+  `update_task`/`complete_task` as-is. Parent auto-complete is a new check in
+  `complete_task`/subtask-completion path: after marking a subtask done,
+  check if all siblings are done and cascade.
+
+## Board: Flat Filterable To-Do List
+
+Kanban columns (backlog/board/done) are removed. Board becomes one
+scrollable checklist — same checkbox/strikethrough/subtask behavior as
+Today — filterable by **tag (goal)** and **status** via chips/dropdowns
+instead of spatial columns. This is the browse-everything view: "show me
+everything tagged Fitness" or "show me everything still backlog."
 
 ## Capture & AI Classification Flow
 
@@ -88,9 +115,10 @@ notifications, no popups — read only if the user chooses to expand it.
 **Subtask breakdown** — triggered when a captured task's title looks large or
 vague (heuristic: >8 words, or contains "and"/"then", or the AI classifier
 itself flags low decomposability during classification). AI proposes 2–4
-subtasks inline under the task card. One tap ("Split") accepts them as child
-backlog tasks under the same goal; ignoring the suggestion leaves the
-original task untouched.
+subtasks, rendered directly into the same to-do checklist described in Task
+Completion Model above (not a separate structure). One tap ("Split") creates
+them as child tasks (`parent_task_id` set, same goal); ignoring the
+suggestion leaves the original task untouched as a single checkable item.
 
 ## Visual Style
 
@@ -110,6 +138,58 @@ fresh stylesheet is cleaner than layering on the old one.
 - Motion is subtle only: toast fade-ins for AI auto-sort. No shame-based UI —
   no red states, nothing that draws attention to inaction.
 
+## UI Diagrams (text mockups)
+
+### Today screen
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Workmap                                  [Today] Board Goals │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ✏️  Capture anything...                              [↵]     │  ← inbox bar
+│                                                               │
+│  🔥 6 day streak · 1 freeze left        Needs a look (2) ›   │
+│  ┌ 90-day activity ─────────────────────────────────────┐   │
+│  │ ▢▢▤▤▥ ▤▥▦▢▢ ▥▦▧▤▢ ▢▤▥▦▧ ▧▦▥▤▢ ...                    │   │  ← heatmap dots
+│  └────────────────────────────────────────────────────────┘   │
+│                                                               │
+│  Next actions                          [10 min] [1 hr] [any] │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │ ○  Reply to landlord email          #Home      Start › │  │
+│  │ ○  Stretch + 10 pushups             #Fitness   Start › │  │
+│  │    ↳ ☐ warm up   ☐ 10 pushups   ☐ stretch 5 min       │  │  ← subtask checklist
+│  │ ○  Draft Q3 goals doc               #Work      Start › │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                               │
+│  ▾ Digest: 3 stale in #Fitness, streak steady, 2 done today  │
+│                                                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Board (flat filterable to-do list)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Workmap                                  Today [Board] Goals │
+├─────────────────────────────────────────────────────────────┤
+│  Filter:  #Fitness ✕   #Work   #Home        Status: All ▾    │
+├─────────────────────────────────────────────────────────────┤
+│  ☑  ~~Book dentist appointment~~              #Home           │
+│  ☐  Draft Q3 goals doc                        #Work           │
+│  ☐  Stretch + 10 pushups                      #Fitness        │
+│      ↳ ☑ ~~warm up~~   ☐ 10 pushups   ☐ stretch 5 min        │
+│  ☐  Refactor onboarding flow                  #Work           │
+│  ☑  ~~Pay electricity bill~~                  #Home            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- Checked items show strikethrough (`~~text~~` above stands in for that).
+- Tag chips (`#Fitness`, `#Work`, `#Home`) are the goal, clickable to filter.
+- Subtask rows indent under the parent, same checkbox behavior; parent
+  auto-checks when all children are checked (see "10 pushups" example above —
+  still open, so "Stretch + 10 pushups" stays unchecked).
+
 ## Explicitly Out of Scope
 
 - Push notifications / external reminders for the digest.
@@ -117,6 +197,9 @@ fresh stylesheet is cleaner than layering on the old one.
 - New AI infra (no new model, no new service) — everything builds on the
   existing pipeline in `local_store.py`.
 - Multi-user / auth — this remains a local-first single-user tool.
+- Free-form/arbitrary tags — tags are goals only, no separate tagging system.
+- Kanban board — removed entirely in favor of the flat filterable list.
+- Multi-level subtasks (subtasks of subtasks) — one level of nesting only.
 
 ## Testing Notes
 
@@ -127,6 +210,9 @@ fresh stylesheet is cleaner than layering on the old one.
   thresholds need an explicit, testable definition (e.g. a numeric score) so
   the "auto-apply vs needs-a-look" gate is deterministic and testable without
   Ollama running (deterministic fallback path).
+- Backend: unit tests for subtask auto-complete cascade (checking last
+  subtask completes parent; checking a subtask when siblings remain open
+  does not) and for tag/status filtering on the flat Board list.
 - Frontend: no new component should require a runtime AI response to render
   — inbox capture, heatmap, and streak header must all work with the
   deterministic fallback alone, matching the existing "AI unavailable" rule
