@@ -7,7 +7,7 @@ import sqlite3
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -39,36 +39,25 @@ def _connect():
         conn.close()
 
 
-def _json_loads(value: str | None, fallback: Any) -> Any:
-    if not value:
-        return fallback
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return fallback
-
-
-def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    data = dict(row)
-    if "tags_json" in data:
-        data["tags"] = _json_loads(data.pop("tags_json"), [])
-    if "payload_json" in data:
-        data["payload"] = _json_loads(data.pop("payload_json"), {})
-    if "proposed_payload_json" in data:
-        data["payload"] = _json_loads(data.pop("proposed_payload_json"), {})
-    return data
-
-
-def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
-    return [item for row in rows if (item := _row_to_dict(row)) is not None]
-
-
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+TASK_COLUMNS = (
+    "id",
+    "parent_task_id",
+    "title",
+    "description",
+    "status",
+    "due_at",
+    "completed_at",
+    "archived_at",
+    "created_at",
+    "updated_at",
+)
+TASK_COLUMNS_SQL = ", ".join(f"t.{column}" for column in TASK_COLUMNS)
 
 
 def init_db() -> None:
@@ -88,41 +77,25 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
-                goal_id TEXT REFERENCES goals(id) ON DELETE SET NULL,
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'backlog',
-                type TEXT NOT NULL DEFAULT 'task',
-                priority INTEGER NOT NULL DEFAULT 50,
-                estimate_minutes INTEGER NOT NULL DEFAULT 30,
-                logged_minutes INTEGER NOT NULL DEFAULT 0,
-                progress_percent INTEGER NOT NULL DEFAULT 0,
                 due_at TEXT,
-                planned_start_at TEXT,
-                last_worked_at TEXT,
                 completed_at TEXT,
                 archived_at TEXT,
-                tags_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS focus_sessions (
+            CREATE TABLE IF NOT EXISTS tags (
                 id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-                started_at TEXT NOT NULL,
-                ended_at TEXT,
-                duration_minutes INTEGER NOT NULL DEFAULT 0,
-                progress_delta INTEGER NOT NULL DEFAULT 0,
-                summary TEXT NOT NULL DEFAULT ''
+                name TEXT NOT NULL UNIQUE
             );
 
-            CREATE TABLE IF NOT EXISTS task_events (
-                id TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS task_tags (
                 task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-                event_type TEXT NOT NULL,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL
+                tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (task_id, tag_id)
             );
 
             CREATE TABLE IF NOT EXISTS llm_action_drafts (
@@ -139,15 +112,25 @@ def init_db() -> None:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS activity_log (
+                date TEXT PRIMARY KEY,
+                count INTEGER NOT NULL DEFAULT 0,
+                minutes INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS streak_freezes (
+                date_used TEXT PRIMARY KEY
+            );
             """
         )
-        _ensure_column(conn, "tasks", "logged_minutes", "INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(conn, "tasks", "planned_start_at", "TEXT")
-        _ensure_column(conn, "tasks", "last_worked_at", "TEXT")
+        # Additive migrations for sqlite files created before these columns/tables existed.
+        # Safe to run even on a fresh db (no-ops there since the columns already exist).
         _ensure_column(conn, "tasks", "completed_at", "TEXT")
         _ensure_column(conn, "tasks", "archived_at", "TEXT")
+        _ensure_column(conn, "tasks", "parent_task_id", "TEXT REFERENCES tasks(id) ON DELETE CASCADE")
         _ensure_column(conn, "llm_action_drafts", "confirmed_at", "TEXT")
-        count = conn.execute("SELECT COUNT(*) AS count FROM goals").fetchone()["count"]
+        count = conn.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"]
         seed_disabled = conn.execute(
             "SELECT value FROM app_settings WHERE key = ?",
             ("seed_disabled",),
@@ -158,391 +141,299 @@ def init_db() -> None:
 
 def seed(conn: sqlite3.Connection) -> None:
     now = _now()
-    goals = [
-        ("goal-career", "Switch job preparation", "Interview preparation and system design depth.", "active", 90, 40),
-        ("goal-work", "Company execution", "Current and upcoming sprint execution.", "active", 80, 20),
-        ("goal-learning", "Core engineering depth", "Small learning tasks and engineering fundamentals.", "active", 70, 0),
-    ]
-    conn.executemany(
-        """
-        INSERT INTO goals (id, title, description, status, priority, progress_percent, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [(*goal, now, now) for goal in goals],
-    )
-
     tasks = [
         (
             "task-payments",
-            "goal-career",
             "Prepare payment system design",
             "Cover lifecycle, idempotency, ledger, reconciliation, retries, and failure handling.",
-            "doing",
-            "study",
-            91,
-            360,
-            0,
-            40,
             None,
-            None,
-            now,
-            None,
-            None,
-            ["system-design", "interview"],
+            ["Career", "Interview"],
         ),
         (
             "task-redis",
-            "goal-learning",
             "Study Redis set vs sorted set",
             "Understand operations, use cases, and tradeoffs.",
-            "backlog",
-            "study",
-            74,
-            25,
-            0,
-            0,
             None,
-            None,
-            None,
-            None,
-            None,
-            ["redis", "quick-win"],
+            ["Learning", "Redis"],
         ),
         (
             "task-sprint",
-            "goal-work",
             "Plan next sprint execution",
             "Group tasks into must-ship, risk, and follow-up.",
-            "backlog",
-            "company",
-            82,
-            90,
-            0,
-            15,
-            None,
-            None,
             now,
-            None,
-            None,
-            ["sprint"],
+            ["Work"],
         ),
         (
             "task-observability",
-            "goal-work",
             "Design API latency dashboard",
             "Define metrics, panels, and alert thresholds.",
-            "blocked",
-            "company",
-            67,
-            180,
-            0,
-            10,
             None,
-            None,
-            now,
-            None,
-            None,
-            ["observability"],
+            ["Work"],
         ),
         (
             "task-kafka",
-            "goal-career",
             "Deep dive Kafka consumer rebalancing",
             "Study assignment strategies and failure behavior.",
-            "backlog",
-            "study",
-            52,
-            120,
-            0,
-            0,
             None,
-            None,
-            None,
-            None,
-            None,
-            ["distributed-systems"],
+            ["Career", "Learning"],
         ),
     ]
-    conn.executemany(
-        """
-        INSERT INTO tasks (
-            id, goal_id, title, description, status, type, priority, estimate_minutes,
-            logged_minutes, progress_percent, due_at, planned_start_at, last_worked_at,
-            completed_at, archived_at, tags_json, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [(*task[:15], json.dumps(task[15]), now, now) for task in tasks],
-    )
-
-    sessions = [
-        ("session-payments-1", "task-payments", now, now, 55, 20, "Read payment lifecycle and gateway flow."),
-        ("session-payments-2", "task-payments", now, now, 85, 20, "Added notes from this focus session."),
-        ("session-sprint-1", "task-sprint", now, now, 20, 15, "Collected open sprint threads."),
-    ]
-    conn.executemany(
-        """
-        INSERT INTO focus_sessions (id, task_id, started_at, ended_at, duration_minutes, progress_delta, summary)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        sessions,
-    )
-
-
-def list_goals() -> list[dict[str, Any]]:
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                g.*,
-                COUNT(t.id) AS task_count,
-                COALESCE(ROUND(AVG(t.progress_percent)), g.progress_percent) AS calculated_progress
-            FROM goals g
-            LEFT JOIN tasks t ON t.goal_id = g.id AND t.archived_at IS NULL
-            GROUP BY g.id
-            ORDER BY g.priority DESC, g.created_at DESC
-            """
-        ).fetchall()
-        return _rows_to_dicts(rows)
-
-
-def get_goal(goal_id: str) -> dict[str, Any] | None:
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
-        return _row_to_dict(row)
-
-
-def create_goal(payload: dict[str, Any]) -> dict[str, Any]:
-    goal_id = payload.get("id") or _id("goal")
-    now = _now()
-    with _connect() as conn:
+    for task_id, title, description, due_at, tag_names in tasks:
         conn.execute(
             """
-            INSERT INTO goals (id, title, description, status, priority, progress_percent, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, description, status, due_at, created_at, updated_at)
+            VALUES (?, ?, ?, 'backlog', ?, ?, ?)
             """,
-            (
-                goal_id,
-                payload["title"],
-                payload.get("description", ""),
-                payload.get("status", "active"),
-                payload.get("priority", 50),
-                payload.get("progress_percent", 0),
-                now,
-                now,
-            ),
+            (task_id, title, description, due_at, now, now),
         )
-    return get_goal(goal_id) or {}
+        for tag_name in tag_names:
+            tag = _get_or_create_tag_conn(conn, tag_name)
+            if tag:
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)",
+                    (task_id, tag["id"]),
+                )
 
 
-def update_goal(goal_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    allowed = {"title", "description", "status", "priority", "progress_percent"}
-    updates = {key: value for key, value in payload.items() if key in allowed and value is not None}
-    if not updates:
-        return get_goal(goal_id)
-    assignments = ", ".join(f"{key} = ?" for key in updates)
-    values = list(updates.values()) + [_now(), goal_id]
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+
+def _get_or_create_tag_conn(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return None
+    row = conn.execute("SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE", (cleaned,)).fetchone()
+    if row:
+        return dict(row)
+    tag_id = _id("tag")
+    conn.execute("INSERT INTO tags (id, name) VALUES (?, ?)", (tag_id, cleaned))
+    return {"id": tag_id, "name": cleaned}
+
+
+def list_tags() -> list[dict[str, Any]]:
     with _connect() as conn:
-        conn.execute(f"UPDATE goals SET {assignments}, updated_at = ? WHERE id = ?", values)
-    return get_goal(goal_id)
+        rows = conn.execute("SELECT id, name FROM tags ORDER BY name COLLATE NOCASE").fetchall()
+        return [dict(row) for row in rows]
 
 
-def _task_where(goal_id: str | None, status: str | None, include_archived: bool) -> tuple[str, list[Any]]:
+def get_or_create_tag(name: str) -> dict[str, Any]:
+    with _connect() as conn:
+        tag = _get_or_create_tag_conn(conn, name)
+        if tag is None:
+            raise ValueError("Tag name is required")
+        return tag
+
+
+def _resolve_tag_ids_conn(
+    conn: sqlite3.Connection,
+    tag_ids: list[str] | None,
+    tag_names: list[str] | None,
+) -> list[str]:
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for tag_id in tag_ids or []:
+        row = conn.execute("SELECT id FROM tags WHERE id = ?", (tag_id,)).fetchone()
+        if row and row["id"] not in seen:
+            resolved.append(row["id"])
+            seen.add(row["id"])
+    for name in tag_names or []:
+        tag = _get_or_create_tag_conn(conn, name)
+        if tag and tag["id"] not in seen:
+            resolved.append(tag["id"])
+            seen.add(tag["id"])
+    return resolved
+
+
+def _set_task_tags_conn(conn: sqlite3.Connection, task_id: str, tag_ids: list[str]) -> None:
+    conn.execute("DELETE FROM task_tags WHERE task_id = ?", (task_id,))
+    for tag_id in tag_ids:
+        conn.execute(
+            "INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)",
+            (task_id, tag_id),
+        )
+
+
+def _get_task_tags_conn(conn: sqlite3.Connection, task_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT tags.id AS id, tags.name AS name
+        FROM tags
+        JOIN task_tags ON task_tags.tag_id = tags.id
+        WHERE task_tags.task_id = ?
+        ORDER BY tags.name COLLATE NOCASE
+        """,
+        (task_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+
+def _query_tasks(
+    conn: sqlite3.Connection,
+    parent_task_id: str | None,
+    status: str | None,
+    include_archived: bool,
+) -> list[dict[str, Any]]:
     where = []
     params: list[Any] = []
     if not include_archived:
         where.append("t.archived_at IS NULL")
-    if goal_id:
-        where.append("t.goal_id = ?")
-        params.append(goal_id)
     if status:
         where.append("t.status = ?")
         params.append(status)
-    return (f"WHERE {' AND '.join(where)}" if where else "", params)
+    if parent_task_id is not None:
+        where.append("t.parent_task_id = ?")
+        params.append(parent_task_id)
+    else:
+        where.append("t.parent_task_id IS NULL")
+    where_clause = f"WHERE {' AND '.join(where)}"
+    rows = conn.execute(
+        f"""
+        SELECT {TASK_COLUMNS_SQL}
+        FROM tasks t
+        {where_clause}
+        ORDER BY
+            CASE t.status WHEN 'backlog' THEN 0 WHEN 'done' THEN 1 ELSE 2 END,
+            CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END,
+            t.due_at ASC,
+            t.created_at DESC
+        """,
+        params,
+    ).fetchall()
+    tasks = [dict(row) for row in rows]
+    for task in tasks:
+        task["tags"] = _get_task_tags_conn(conn, task["id"])
+    return tasks
 
 
 def list_tasks(
-    goal_id: str | None = None,
+    tag_id: str | None = None,
     status: str | None = None,
     include_archived: bool = False,
+    parent_task_id: str | None = None,
+    with_subtasks: bool = False,
 ) -> list[dict[str, Any]]:
-    where_clause, params = _task_where(goal_id, status, include_archived)
     with _connect() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT
-                t.*,
-                g.title AS goal_title,
-                COALESCE(SUM(f.duration_minutes), 0) AS session_minutes,
-                (t.logged_minutes + COALESCE(SUM(f.duration_minutes), 0)) AS total_logged_minutes
-            FROM tasks t
-            LEFT JOIN goals g ON g.id = t.goal_id
-            LEFT JOIN focus_sessions f ON f.task_id = t.id
-            {where_clause}
-            GROUP BY t.id
-            ORDER BY
-                CASE t.status
-                    WHEN 'doing' THEN 0
-                    WHEN 'next' THEN 1
-                    WHEN 'backlog' THEN 2
-                    WHEN 'blocked' THEN 3
-                    WHEN 'done' THEN 4
-                    ELSE 5
-                END,
-                CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END,
-                t.due_at ASC,
-                t.priority DESC,
-                t.created_at DESC
-            """,
-            params,
-        ).fetchall()
-        return _rows_to_dicts(rows)
+        tasks = _query_tasks(conn, parent_task_id, status, include_archived)
+        need_subtasks = (with_subtasks or bool(tag_id)) and parent_task_id is None
+        if need_subtasks:
+            for task in tasks:
+                task["subtasks"] = _query_tasks(conn, task["id"], None, include_archived)
+
+        if tag_id:
+            def matches(task: dict[str, Any]) -> bool:
+                if any(tag["id"] == tag_id for tag in task["tags"]):
+                    return True
+                return any(
+                    any(tag["id"] == tag_id for tag in sub["tags"])
+                    for sub in task.get("subtasks", [])
+                )
+
+            tasks = [task for task in tasks if matches(task)]
+            # Keep the (already-fetched) subtasks nested so a subtask that only matches
+            # via its own tag is still visible under its parent, per the "never orphan
+            # a matching subtask" filtering rule — even if with_subtasks wasn't asked for.
+
+        return tasks
 
 
 def get_task(task_id: str) -> dict[str, Any] | None:
     with _connect() as conn:
-        task = conn.execute(
-            """
-            SELECT
-                t.*,
-                g.title AS goal_title,
-                COALESCE(SUM(f.duration_minutes), 0) AS session_minutes,
-                (t.logged_minutes + COALESCE(SUM(f.duration_minutes), 0)) AS total_logged_minutes
-            FROM tasks t
-            LEFT JOIN goals g ON g.id = t.goal_id
-            LEFT JOIN focus_sessions f ON f.task_id = t.id
-            WHERE t.id = ?
-            GROUP BY t.id
-            """,
+        row = conn.execute(
+            f"SELECT {', '.join(TASK_COLUMNS)} FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
-        data = _row_to_dict(task)
-        if data is None:
+        if row is None:
             return None
-        sessions = conn.execute(
-            "SELECT * FROM focus_sessions WHERE task_id = ? ORDER BY started_at DESC",
+        data = dict(row)
+        data["tags"] = _get_task_tags_conn(conn, task_id)
+        subtask_rows = conn.execute(
+            f"""
+            SELECT {', '.join(TASK_COLUMNS)}
+            FROM tasks
+            WHERE parent_task_id = ?
+            ORDER BY created_at ASC
+            """,
             (task_id,),
         ).fetchall()
-        events = conn.execute(
-            "SELECT id, event_type, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY created_at DESC",
-            (task_id,),
-        ).fetchall()
-        data["sessions"] = _rows_to_dicts(sessions)
-        data["events"] = _rows_to_dicts(events)
+        subtasks = [dict(sub_row) for sub_row in subtask_rows]
+        for subtask in subtasks:
+            subtask["tags"] = _get_task_tags_conn(conn, subtask["id"])
+        data["subtasks"] = subtasks
         return data
 
 
 def create_task(payload: dict[str, Any]) -> dict[str, Any]:
     task_id = payload.get("id") or _id("task")
+    parent_task_id = payload.get("parent_task_id")
     now = _now()
     with _connect() as conn:
+        tag_ids = _resolve_tag_ids_conn(conn, payload.get("tag_ids"), payload.get("tag_names"))
         conn.execute(
             """
-            INSERT INTO tasks (
-                id, goal_id, title, description, status, type, priority, estimate_minutes,
-                logged_minutes, progress_percent, due_at, planned_start_at, last_worked_at,
-                completed_at, archived_at, tags_json, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, parent_task_id, title, description, status, due_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'backlog', ?, ?, ?)
             """,
             (
                 task_id,
-                payload.get("goal_id"),
+                parent_task_id,
                 payload["title"],
                 payload.get("description", ""),
-                payload.get("status", "backlog"),
-                payload.get("type", "task"),
-                payload.get("priority", 50),
-                payload.get("estimate_minutes", 30),
-                payload.get("logged_minutes", 0),
-                payload.get("progress_percent", 0),
                 payload.get("due_at"),
-                payload.get("planned_start_at"),
-                payload.get("last_worked_at"),
-                payload.get("completed_at"),
-                payload.get("archived_at"),
-                json.dumps(payload.get("tags", [])),
                 now,
                 now,
             ),
         )
+        if tag_ids:
+            _set_task_tags_conn(conn, task_id, tag_ids)
+    record_activity()
     return get_task(task_id) or {}
 
 
 def update_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    allowed = {
-        "goal_id",
-        "title",
-        "description",
-        "status",
-        "type",
-        "priority",
-        "estimate_minutes",
-        "logged_minutes",
-        "progress_percent",
-        "due_at",
-        "planned_start_at",
-        "last_worked_at",
-        "completed_at",
-        "archived_at",
-    }
+    allowed = {"title", "description", "status", "due_at", "completed_at", "archived_at"}
     updates = {key: value for key, value in payload.items() if key in allowed}
-    if "tags" in payload:
-        updates["tags_json"] = json.dumps(payload["tags"] or [])
     if updates.get("status") == "done":
-        updates.setdefault("progress_percent", 100)
         updates.setdefault("completed_at", _now())
-    if not updates:
-        return get_task(task_id)
-    assignments = ", ".join(f"{key} = ?" for key in updates)
-    values = list(updates.values()) + [_now(), task_id]
-    with _connect() as conn:
-        conn.execute(f"UPDATE tasks SET {assignments}, updated_at = ? WHERE id = ?", values)
-    return get_task(task_id)
+    elif updates.get("status") == "backlog":
+        updates.setdefault("completed_at", None)
 
-
-def add_progress(task_id: str, progress_delta: int, minutes: int, summary: str) -> dict[str, Any] | None:
-    task = get_task(task_id)
-    if task is None:
-        return None
-    next_progress = min(100, max(0, int(task["progress_percent"]) + progress_delta))
-    status = "done" if next_progress >= 100 else "doing"
-    now = _now()
-    clean_summary = summary.strip() or f"Added {progress_delta}% progress."
     with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO focus_sessions (id, task_id, started_at, ended_at, duration_minutes, progress_delta, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (_id("session"), task_id, now, now, minutes, progress_delta, clean_summary),
-        )
-        conn.execute(
-            """
-            UPDATE tasks
-            SET progress_percent = ?, status = ?, last_worked_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (next_progress, status, now, now, task_id),
-        )
-        conn.execute(
-            """
-            INSERT INTO task_events (id, task_id, event_type, payload_json, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                _id("event"),
-                task_id,
-                "progress_added",
-                json.dumps({"progress_delta": progress_delta, "minutes": minutes, "summary": clean_summary}),
-                now,
-            ),
-        )
+        if updates:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            values = list(updates.values()) + [_now(), task_id]
+            conn.execute(f"UPDATE tasks SET {assignments}, updated_at = ? WHERE id = ?", values)
+        if "tag_ids" in payload or "tag_names" in payload:
+            tag_ids = _resolve_tag_ids_conn(conn, payload.get("tag_ids"), payload.get("tag_names"))
+            _set_task_tags_conn(conn, task_id, tag_ids)
     return get_task(task_id)
 
 
 def complete_task(task_id: str) -> dict[str, Any] | None:
-    return update_task(task_id, {"status": "done", "progress_percent": 100, "completed_at": _now()})
+    task = get_task(task_id)
+    if task is None:
+        return None
+    if task["status"] == "done":
+        return task
+
+    update_task(task_id, {"status": "done", "completed_at": _now()})
+    record_activity()
+
+    parent_task_id = task.get("parent_task_id")
+    if parent_task_id:
+        siblings = list_tasks(parent_task_id=parent_task_id, include_archived=True)
+        if siblings and all(sibling["status"] == "done" for sibling in siblings):
+            parent = get_task(parent_task_id)
+            if parent and parent["status"] != "done":
+                complete_task(parent_task_id)
+
+    return get_task(task_id)
 
 
 def archive_task(task_id: str) -> dict[str, Any] | None:
@@ -558,106 +449,229 @@ def delete_task(task_id: str) -> bool:
 def clear_workspace() -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM llm_action_drafts")
-        conn.execute("DELETE FROM task_events")
-        conn.execute("DELETE FROM focus_sessions")
+        conn.execute("DELETE FROM task_tags")
         conn.execute("DELETE FROM tasks")
+        conn.execute("DELETE FROM tags")
         conn.execute("DELETE FROM goals")
+        conn.execute("DELETE FROM activity_log")
+        conn.execute("DELETE FROM streak_freezes")
         conn.execute(
             "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
             ("seed_disabled", "true"),
         )
 
 
+# ---------------------------------------------------------------------------
+# Activity / streaks (unchanged)
+# ---------------------------------------------------------------------------
+
+
+def _today_key() -> str:
+    return _now()[:10]
+
+
+def record_activity(minutes: int = 0) -> None:
+    date_key = _today_key()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO activity_log (date, count, minutes) VALUES (?, 1, ?)
+            ON CONFLICT(date) DO UPDATE SET count = count + 1, minutes = minutes + excluded.minutes
+            """,
+            (date_key, minutes),
+        )
+
+
+def _freeze_token_available(freeze_dates: set[date], today: date) -> bool:
+    window_start = today - timedelta(days=6)
+    return not any(window_start <= freeze_date <= today for freeze_date in freeze_dates)
+
+
+def _compute_streak(
+    counts: dict[str, int],
+    freeze_dates: set[date],
+    today: date,
+    max_days: int = 400,
+) -> tuple[int, bool, date | None]:
+    def activity_count(day: date) -> int:
+        return counts.get(day.isoformat(), 0)
+
+    if activity_count(today) > 0:
+        cursor: date | None = today
+    elif activity_count(today - timedelta(days=1)) > 0 or (today - timedelta(days=1)) in freeze_dates:
+        cursor = today - timedelta(days=1)
+    else:
+        cursor = None
+
+    streak = 0
+    newly_frozen: date | None = None
+    gap_used_this_walk = False
+    earliest = today - timedelta(days=max_days)
+    # Days before the earliest recorded activity (or freeze) row are "no history", not
+    # genuine idle days, so they must never be treated as a freezable gap.
+    recorded_dates = [date.fromisoformat(day) for day in counts] + list(freeze_dates)
+    earliest_recorded = min(recorded_dates) if recorded_dates else today
+
+    while cursor is not None and cursor >= earliest:
+        if activity_count(cursor) > 0:
+            streak += 1
+            cursor -= timedelta(days=1)
+            continue
+        if cursor in freeze_dates:
+            # Previously-frozen gap day: chain stays unbroken, but does not add to the count.
+            cursor -= timedelta(days=1)
+            continue
+        if cursor < earliest_recorded:
+            break
+        if gap_used_this_walk:
+            break
+        window_start = cursor - timedelta(days=6)
+        used_recently = any(window_start <= freeze_date <= cursor for freeze_date in freeze_dates)
+        within_recent_window = cursor >= today - timedelta(days=7)
+        if within_recent_window and not used_recently:
+            gap_used_this_walk = True
+            newly_frozen = cursor
+            cursor -= timedelta(days=1)
+            continue
+        break
+
+    effective_freeze_dates = freeze_dates | ({newly_frozen} if newly_frozen else set())
+    freeze_available = _freeze_token_available(effective_freeze_dates, today)
+    return streak, freeze_available, newly_frozen
+
+
+def get_activity(days: int = 90) -> dict[str, Any]:
+    with _connect() as conn:
+        activity_rows = conn.execute("SELECT date, count FROM activity_log").fetchall()
+        freeze_rows = conn.execute("SELECT date_used FROM streak_freezes").fetchall()
+
+    counts = {row["date"]: int(row["count"]) for row in activity_rows}
+    freeze_dates = {date.fromisoformat(row["date_used"]) for row in freeze_rows}
+    today = datetime.now(timezone.utc).date()
+
+    streak, freeze_available, newly_frozen = _compute_streak(counts, freeze_dates, today)
+    if newly_frozen is not None:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO streak_freezes (date_used) VALUES (?)",
+                (newly_frozen.isoformat(),),
+            )
+
+    day_list = [(today - timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1)]
+    return {
+        "days": [{"date": day, "count": counts.get(day, 0)} for day in day_list],
+        "streak": streak,
+        "freeze_available": freeze_available,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard / suggestions / due signals
+# ---------------------------------------------------------------------------
+
+
 def dashboard() -> dict[str, Any]:
-    goals = list_goals()
+    tags = list_tags()
     tasks = list_tasks()
     active_tasks = [task for task in tasks if task["status"] != "done"]
-    blocked_tasks = [task for task in tasks if task["status"] == "blocked"]
-    logged_minutes = sum(int(task.get("total_logged_minutes") or 0) for task in tasks)
     next_tasks = suggest_next_tasks(5)
     due = due_buckets(tasks)
     return {
         "stats": {
-            "goals": len(goals),
+            "tags": len(tags),
             "active_tasks": len(active_tasks),
-            "blocked_tasks": len(blocked_tasks),
-            "logged_minutes": logged_minutes,
             "due_soon": len(due["due_soon"]),
             "overdue": len(due["overdue"]),
             "stale": len(due["stale"]),
         },
-        "goals": goals,
+        "tags": tags,
         "next_tasks": next_tasks,
         "recent_tasks": tasks[:8],
         "due": due,
     }
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def due_buckets(tasks: list[dict[str, Any]] | None = None) -> dict[str, list[dict[str, Any]]]:
-    tasks = tasks or list_tasks()
+    tasks = tasks if tasks is not None else list_tasks()
     now = datetime.now(timezone.utc)
-    buckets = {"overdue": [], "due_soon": [], "no_due_date": [], "stale": []}
+    buckets: dict[str, list[dict[str, Any]]] = {"overdue": [], "due_soon": [], "no_due_date": [], "stale": []}
     for task in tasks:
         if task["status"] == "done":
             continue
-        due_at = task.get("due_at")
-        if due_at:
-            try:
-                due_date = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
-                days = (due_date - now).days
-                if due_date < now:
-                    buckets["overdue"].append(task)
-                elif days <= 7:
-                    buckets["due_soon"].append(task)
-            except ValueError:
-                buckets["no_due_date"].append(task)
+        due_date = _parse_iso(task.get("due_at"))
+        if due_date is not None:
+            if due_date < now:
+                buckets["overdue"].append(task)
+            elif (due_date - now).days <= 7:
+                buckets["due_soon"].append(task)
         else:
             buckets["no_due_date"].append(task)
-        if int(task.get("progress_percent") or 0) > 0 and task.get("last_worked_at") is None:
-            buckets["stale"].append(task)
+            created_date = _parse_iso(task.get("created_at"))
+            if created_date is not None and (now - created_date).days >= 14:
+                buckets["stale"].append(task)
     return buckets
 
 
 def suggest_next_tasks(limit: int = 3) -> list[dict[str, Any]]:
     def score(task: dict[str, Any]) -> int:
-        status_bonus = {"doing": 25, "next": 18, "backlog": 5, "blocked": -40, "done": -100}.get(task["status"], 0)
-        progress_bonus = 12 if 0 < int(task["progress_percent"]) < 100 else 0
-        quick_win_bonus = 10 if int(task["estimate_minutes"]) <= 30 else 0
         due_bonus = 15 if task.get("due_at") else 0
-        return int(task["priority"]) + status_bonus + progress_bonus + quick_win_bonus + due_bonus
+        tag_bonus = 3 * len(task.get("tags") or [])
+        return due_bonus + tag_bonus
 
     tasks = [task for task in list_tasks() if task["status"] != "done"]
     return sorted(tasks, key=score, reverse=True)[:limit]
 
 
-def _find_goal_id_by_title(title: str | None) -> str | None:
+# ---------------------------------------------------------------------------
+# AI draft pipeline
+# ---------------------------------------------------------------------------
+
+
+def _find_tag_id_by_title(title: str | None) -> str | None:
     if not title:
         return None
     normalized = title.strip().lower()
-    for goal in list_goals():
-        goal_title = goal["title"].lower()
-        if normalized == goal_title or normalized in goal_title or goal_title in normalized:
-            return goal["id"]
+    for tag in list_tags():
+        tag_name = tag["name"].lower()
+        if normalized == tag_name or normalized in tag_name or tag_name in normalized:
+            return tag["id"]
     return None
 
 
-def _goal_context() -> str:
-    goals = list_goals()
-    if not goals:
-        return "No goals exist yet. Use null goal_id unless the command asks to create a goal."
-    return "\n".join(f"- id={goal['id']} title={goal['title']}" for goal in goals)
+def _tag_context() -> str:
+    tags = list_tags()
+    if not tags:
+        return "No tags exist yet. Use an empty tags list unless the command clearly names a topic."
+    return "\n".join(f"- id={tag['id']} name={tag['name']}" for tag in tags)
 
 
 def _extract_json_from_ollama(text: str) -> dict[str, Any] | None:
     prompt = f"""
 You are Workmap's local planner parser. Return only valid JSON.
 
-Existing goals:
-{_goal_context()}
+For create/add/make task commands:
+- Extract the actual work item, not the command wrapper.
+- Do not copy phrases like "create a task", "backlog task", "for me", "in tags", or "basically" into task titles or descriptions.
+- Use concise verb-led titles such as "Watch YouTube video about laid-off ex-Atlassian employees".
+- Descriptions should describe the work and next useful outcome, not repeat the user command.
+
+Existing tags:
+{_tag_context()}
 
 Allowed action_type values:
 - create_task
-- create_goal
 - update_task
 - complete_task
 - summarize
@@ -668,13 +682,8 @@ For create_task return:
   "action_type": "create_task",
   "payload": {{
     "title": "short polished task title, max 70 chars",
-    "goal_id": "one existing goal id if clearly matched, else null",
-    "goal_title": "matched goal title or null",
     "description": "clear 1-3 sentence task description",
     "status": "backlog",
-    "type": "study|company|task|project",
-    "priority": integer 0-100,
-    "estimate_minutes": integer,
     "due_at": null,
     "tags": ["short", "tags"]
   }}
@@ -683,8 +692,7 @@ For create_task return:
 Rules:
 - Do not copy the raw command as the title.
 - Infer a concise title from the user's intent.
-- Fill description, priority, estimate_minutes, type, and tags.
-- Pick goal_id only from the existing goal list.
+- Fill description and tags; prefer matching an existing tag name when clearly implied.
 - New tasks always start in backlog.
 
 Command: {text}
@@ -699,23 +707,14 @@ Command: {text}
         return None
 
 
-
-def _goal_title(goal_id: str | None) -> str | None:
-    if not goal_id:
-        return None
-    goal = get_goal(goal_id)
-    return goal.get("title") if goal else None
-
-
-def _strip_goal_and_date_phrases(value: str, goal_id: str | None) -> str:
+def _strip_tag_and_date_phrases(value: str, tag_name: str | None) -> str:
     title = " ".join(value.replace("\n", " ").split())
-    goal_title = _goal_title(goal_id)
-    if goal_title:
+    if tag_name:
         for phrase in (
-            f"under {goal_title}",
-            f"in {goal_title}",
-            f"inside {goal_title}",
-            f"for {goal_title}",
+            f"under {tag_name}",
+            f"in {tag_name}",
+            f"inside {tag_name}",
+            f"for {tag_name}",
         ):
             title = title.replace(phrase, "")
             title = title.replace(phrase.title(), "")
@@ -760,8 +759,101 @@ def _looks_like_raw_command(candidate: str, original: str) -> bool:
     return any(fragment in cleaned for fragment in command_fragments)
 
 
-def _clean_task_title(text: str, candidate: str | None, goal_id: str | None) -> str:
+_TASK_COMMAND_PATTERNS = (
+    r"^\s*(?:please\s+)?(?:create|add|make)\s+(?:a\s+|an\s+)?(?:new\s+)?(?:backlog\s+)?task(?:\s+(?:for\s+me|in\s+(?:the\s+)?tags?|to\s+(?:the\s+)?backlog))?\s*[:.\-]?\s*",
+    r"^\s*(?:please\s+)?(?:create|add|make)\s+(?:this\s+)?(?:for\s+me\s+)?(?:in\s+(?:the\s+)?tags?)\s*[:.\-]?\s*",
+)
+
+
+def _strip_task_command_wrapper(value: str) -> str:
+    cleaned = value.strip()
+    previous = None
+    while cleaned and cleaned != previous:
+        previous = cleaned
+        for pattern in _TASK_COMMAND_PATTERNS:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^\s*basically,?\s+(?:it\s+is\s+|it's\s+)?", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*(?:create|add|make)\s+the\s+task\s+for\s+me\s+in\s+(?:the\s+)?(?:goals?|tags?)\.?\s*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+in\s+(?:the\s+)?(?:goals?|tags?)\.?\s*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip(" .:-")
+    return cleaned
+
+
+def _extract_task_intent_title(text: str) -> str | None:
+    for part in re.split(r"(?<=[.!?])\s+", text):
+        cleaned = _strip_task_command_wrapper(part)
+        if not cleaned:
+            continue
+        if re.search(r"\b(?:create|add|make)\s+(?:a\s+|the\s+)?(?:backlog\s+)?task\b", cleaned, flags=re.IGNORECASE):
+            continue
+        lower = cleaned.lower()
+        if lower.startswith(("watching ", "watch ")):
+            cleaned = re.sub(r"^(?:it\s+is\s+|it's\s+)?watching\b", "Watch", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"^watch\b", "Watch", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\b(?:a\s+)?youtube\s+of\b", "YouTube video about", cleaned, flags=re.IGNORECASE)
+            return cleaned[:70].rstrip(" .:-")
+        if lower.startswith(("study ", "read ", "review ", "prepare ", "build ", "update ", "fix ")):
+            return cleaned[:70].rstrip(" .:-")
+    cleaned = _strip_task_command_wrapper(text)
+    if cleaned and len(cleaned.split()) >= 3:
+        return cleaned[:70].rstrip(" .:-")
+    return None
+
+
+def _title_is_command_wrapper(candidate: str, original: str) -> bool:
+    lowered = candidate.strip().lower()
+    if _looks_like_raw_command(candidate, original):
+        return True
+    if lowered.startswith(("create ", "add ", "make ")) and len(lowered.split()) <= 4:
+        return True
+    return bool(
+        re.search(r"\b(?:create|add|make)\s+(?:a\s+|the\s+)?(?:backlog\s+)?task\b", lowered)
+        or lowered.startswith("basically")
+    )
+
+
+def _description_from_title(title: str, task_type: str) -> str:
+    subject = title.strip().rstrip(".")
+    if not subject:
+        return ""
+    if task_type == "study":
+        match = re.match(r"watch\s+youtube\s+video\s+about\s+(.+)", subject, flags=re.IGNORECASE)
+        if match:
+            return f"Watch the YouTube video about {match.group(1)}. Capture key takeaways and any follow-up action."
+        return f"{subject}. Capture key takeaways and any follow-up action."
+    return subject
+
+
+def _description_is_command_wrapper(candidate: str, original: str) -> bool:
+    lowered = candidate.strip().lower()
+    return bool(
+        lowered.startswith("work on:")
+        or re.search(r"\b(?:create|add|make)\s+(?:a\s+|the\s+)?(?:backlog\s+)?task\b", lowered)
+        or "basically" in lowered
+        or lowered == original.strip().lower()
+    )
+
+
+def _clean_task_description(text: str, candidate: str | None, title: str, task_type: str) -> str:
+    description = (candidate or "").strip()
+    if description and not _description_is_command_wrapper(description, text):
+        return description
+    return _description_from_title(title, task_type) or description
+
+
+def _clean_task_type(text: str, candidate: str | None, fallback: str) -> str:
+    lowered = text.lower()
+    if any(word in lowered for word in ("watch", "youtube", "study", "learn", "read")):
+        return "study"
+    return candidate or fallback
+
+
+def _clean_task_title(text: str, candidate: str | None, tag_name: str | None = None) -> str:
     source = candidate or text
+    extracted = _extract_task_intent_title(text)
+    if extracted and (not candidate or _title_is_command_wrapper(candidate, text)):
+        return extracted
+
     if candidate and _looks_like_raw_command(candidate, text):
         source = text
     title = source.strip()
@@ -783,7 +875,7 @@ def _clean_task_title(text: str, candidate: str | None, goal_id: str | None) -> 
             title = title[len(prefix):].strip(" :-")
             lower = title.lower()
             break
-    title = _strip_goal_and_date_phrases(title, goal_id)
+    title = _strip_tag_and_date_phrases(title, tag_name)
     lower = title.lower()
 
     if "difference between" in lower:
@@ -806,6 +898,13 @@ def _clean_task_title(text: str, candidate: str | None, goal_id: str | None) -> 
     return title[:1].upper() + title[1:] if title else "Untitled task"
 
 
+def _best_tag_name_hint(tags: list[str] | None) -> str | None:
+    for tag in tags or []:
+        if tag and tag != "ai-draft":
+            return tag
+    return None
+
+
 def _infer_task_payload(text: str, context: dict[str, Any]) -> dict[str, Any]:
     cleaned = text.strip()
     lower = cleaned.lower()
@@ -815,51 +914,31 @@ def _infer_task_payload(text: str, context: dict[str, Any]) -> dict[str, Any]:
             lower = cleaned.lower()
             break
 
-    goal_id = context.get("goal_id")
-    if not goal_id:
-        for goal in list_goals():
-            goal_title = goal["title"]
-            if goal_title.lower() in lower:
-                goal_id = goal["id"]
-                cleaned = cleaned.replace(goal_title, "").strip(" :-")
-                break
+    tag_name_hint = None
+    for tag in list_tags():
+        tag_name = tag["name"]
+        if tag_name.lower() in lower:
+            tag_name_hint = tag_name
+            cleaned = cleaned.replace(tag_name, "").strip(" :-")
+            break
 
-    task_type = "study" if any(word in lower for word in ("study", "read", "learn", "revise", "practice")) else "task"
-    if any(word in lower for word in ("sprint", "company", "ticket", "prod", "release")):
-        task_type = "company"
-    if any(word in lower for word in ("design", "system", "architecture", "project")):
-        task_type = "project" if task_type != "company" else "company"
-
-    estimate = 30
-    priority = 50
-    if any(word in lower for word in ("system design", "architecture", "project", "payment")):
-        estimate = 180
-        priority = 82
-    if any(word in lower for word in ("urgent", "blocked", "deadline", "interview")):
-        priority = 90
-    if any(word in lower for word in ("quick", "small", "minor", "difference between")):
-        estimate = 25
-        priority = max(priority, 65)
-
-    title = _clean_task_title(text, cleaned, goal_id)
+    title = _clean_task_title(text, cleaned, tag_name_hint)
     description = (
-        f"Work on: {cleaned}. Capture notes, progress, and next action when the focus session ends."
+        f"Work on: {cleaned}. Capture notes and the next useful action."
         if cleaned
         else "Task created from planner input. Add description before starting."
     )
-    tags = []
+    tags: list[str] = []
     for word in ("redis", "payment", "system-design", "sprint", "interview", "database", "kafka"):
         if word.replace("-", " ") in lower or word in lower:
             tags.append(word)
+    if tag_name_hint:
+        tags.append(tag_name_hint)
 
     return {
         "title": title,
-        "goal_id": goal_id,
         "description": description,
         "status": "backlog",
-        "type": task_type,
-        "priority": priority,
-        "estimate_minutes": estimate,
         "due_at": None,
         "tags": tags or ["ai-draft"],
     }
@@ -867,17 +946,21 @@ def _infer_task_payload(text: str, context: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_task_payload(payload: dict[str, Any], text: str, context: dict[str, Any]) -> dict[str, Any]:
     fallback = _infer_task_payload(text, context)
-    goal_id = payload.get("goal_id") or context.get("goal_id") or _find_goal_id_by_title(payload.get("goal_title"))
+    payload_tags = payload.get("tags") or fallback["tags"]
+    tag_name_hint = _best_tag_name_hint(payload_tags)
+    title = _clean_task_title(text, payload.get("title") or fallback["title"], tag_name_hint)
+    task_type_hint = _clean_task_type(text, payload.get("type"), "task")
     return {
-        "title": _clean_task_title(text, payload.get("title") or fallback["title"], goal_id or fallback.get("goal_id")),
-        "goal_id": goal_id or fallback.get("goal_id"),
-        "description": payload.get("description") or fallback["description"],
+        "title": title,
+        "description": _clean_task_description(
+            text,
+            payload.get("description") or fallback["description"],
+            title,
+            task_type_hint,
+        ),
         "status": "backlog",
-        "type": payload.get("type") or fallback["type"],
-        "priority": int(payload.get("priority") or fallback["priority"]),
-        "estimate_minutes": int(payload.get("estimate_minutes") or fallback["estimate_minutes"]),
         "due_at": payload.get("due_at") or fallback.get("due_at"),
-        "tags": payload.get("tags") or fallback["tags"],
+        "tags": payload_tags,
     }
 
 
@@ -901,14 +984,6 @@ def create_ai_draft(input_text: str, context: dict[str, Any] | None = None) -> d
     elif "complete" in lower:
         action_type = "complete_task"
         payload = {"task_id": context.get("task_id")}
-    elif "create goal" in lower or lower.startswith("goal "):
-        action_type = "create_goal"
-        title = text.replace("create goal", "", 1).replace("Goal", "", 1).strip(" :-") or payload.get("title") or "Untitled goal"
-        payload = {
-            "title": payload.get("title") or title,
-            "description": payload.get("description") or "Goal created from planner input.",
-            "priority": int(payload.get("priority") or 50),
-        }
     elif not action_type:
         action_type = "create_task"
         payload = _infer_task_payload(text, context)
@@ -946,9 +1021,10 @@ def confirm_ai_draft(draft_id: str, overrides: dict[str, Any] | None = None) -> 
             "UPDATE llm_action_drafts SET status = ?, confirmed_at = ? WHERE id = ?",
             ("confirmed", _now(), draft_id),
         )
-    if action_type == "create_goal":
-        result = create_goal(payload)
-    elif action_type == "create_task":
+    if action_type == "create_task":
+        tags = payload.pop("tags", None)
+        if tags:
+            payload.setdefault("tag_names", tags)
         result = create_task(payload)
     elif action_type == "complete_task" and payload.get("task_id"):
         result = complete_task(payload["task_id"]) or {}
@@ -959,21 +1035,19 @@ def confirm_ai_draft(draft_id: str, overrides: dict[str, Any] | None = None) -> 
 
 def planner_capabilities() -> str:
     return (
-        "I can draft goals, create backlog tasks, add tasks inside the current goal, complete tasks, "
-        "suggest what to pick next, summarize the planner, and prepare due-date or priority changes. "
+        "I can create backlog tasks, tag them, complete tasks, suggest what to pick next, "
+        "summarize the planner, and prepare due-date changes. "
         "Mutating actions are shown as drafts before confirmation."
     )
 
 
 def summarize_workspace() -> str:
-    goals = list_goals()
+    tags = list_tags()
     tasks = list_tasks()
-    doing = [task for task in tasks if task["status"] == "doing"]
-    blocked = [task for task in tasks if task["status"] == "blocked"]
+    open_tasks = [task for task in tasks if task["status"] != "done"]
     due = due_buckets(tasks)
     return (
-        f"{len(goals)} goals, {len(tasks)} active tasks. "
-        f"{len(doing)} in progress, {len(blocked)} blocked, "
-        f"{len(due['due_soon'])} due soon, {len(due['stale'])} stale. "
-        "Use due dates and progress notes instead of day-only planning."
+        f"{len(tags)} tags, {len(open_tasks)} open tasks. "
+        f"{len(due['due_soon'])} due soon, {len(due['overdue'])} overdue, {len(due['stale'])} stale. "
+        "Use due dates and tags instead of day-only planning."
     )

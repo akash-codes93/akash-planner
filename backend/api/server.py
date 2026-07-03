@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -35,60 +34,32 @@ class ChatResponse(BaseModel):
     steps: list[StepOut] = Field(default_factory=list)
 
 
-class GoalCreate(BaseModel):
-    title: str
-    description: str = ""
-    status: str = "active"
-    priority: int = Field(default=50, ge=0, le=100)
-    progress_percent: int = Field(default=0, ge=0, le=100)
-
-
-class GoalUpdate(BaseModel):
-    title: str | None = None
-    description: str | None = None
-    status: str | None = None
-    priority: int | None = Field(default=None, ge=0, le=100)
-    progress_percent: int | None = Field(default=None, ge=0, le=100)
+class TagCreate(BaseModel):
+    name: str
 
 
 class TaskCreate(BaseModel):
     title: str
-    goal_id: str | None = None
+    parent_task_id: str | None = None
     description: str = ""
-    status: str = "backlog"
-    type: str = "task"
-    priority: int = Field(default=50, ge=0, le=100)
-    estimate_minutes: int = Field(default=30, ge=1)
-    logged_minutes: int = Field(default=0, ge=0)
-    progress_percent: int = Field(default=0, ge=0, le=100)
     due_at: str | None = None
-    planned_start_at: str | None = None
-    last_worked_at: str | None = None
-    tags: list[str] = Field(default_factory=list)
+    tag_ids: list[str] = Field(default_factory=list)
+    tag_names: list[str] = Field(default_factory=list)
+
+
+class SubtaskCreate(BaseModel):
+    title: str
 
 
 class TaskUpdate(BaseModel):
     title: str | None = None
-    goal_id: str | None = None
     description: str | None = None
     status: str | None = None
-    type: str | None = None
-    priority: int | None = Field(default=None, ge=0, le=100)
-    estimate_minutes: int | None = Field(default=None, ge=1)
-    logged_minutes: int | None = Field(default=None, ge=0)
-    progress_percent: int | None = Field(default=None, ge=0, le=100)
     due_at: str | None = None
-    planned_start_at: str | None = None
-    last_worked_at: str | None = None
     completed_at: str | None = None
     archived_at: str | None = None
-    tags: list[str] | None = None
-
-
-class ProgressCreate(BaseModel):
-    progress_delta: int = Field(default=10, ge=1, le=100)
-    minutes: int = Field(default=25, ge=1)
-    summary: str = "Progress added."
+    tag_ids: list[str] | None = None
+    tag_names: list[str] | None = None
 
 
 class AiCommand(BaseModel):
@@ -109,7 +80,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Akash Planner API",
     description="Local-first personal planning API with optional LLM assistance.",
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -198,18 +169,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.get("/items")
-async def list_items(
-    category: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=200),
-) -> list[dict[str, Any]]:
-    tasks = local_store.list_tasks(status=status)
-    if category:
-        tasks = [task for task in tasks if category in task.get("tags", []) or task.get("type") == category]
-    return tasks[:limit]
-
-
 @app.get("/api/dashboard")
 async def api_dashboard() -> dict[str, Any]:
     local_store.init_db()
@@ -223,51 +182,32 @@ async def api_clear_workspace() -> dict[str, bool]:
     return {"cleared": True}
 
 
-@app.get("/api/goals")
-async def api_list_goals() -> list[dict[str, Any]]:
+@app.get("/api/tags")
+async def api_list_tags() -> list[dict[str, Any]]:
     local_store.init_db()
-    return local_store.list_goals()
+    return local_store.list_tags()
 
 
-@app.post("/api/goals")
-async def api_create_goal(payload: GoalCreate) -> dict[str, Any]:
+@app.post("/api/tags")
+async def api_create_tag(payload: TagCreate) -> dict[str, Any]:
     local_store.init_db()
-    return local_store.create_goal(payload.model_dump())
-
-
-@app.get("/api/goals/{goal_id}")
-async def api_get_goal(goal_id: str) -> dict[str, Any]:
-    local_store.init_db()
-    goal = local_store.get_goal(goal_id)
-    if goal is None:
-        raise HTTPException(status_code=404, detail="Goal not found")
-    goal["tasks"] = local_store.list_tasks(goal_id=goal_id)
-    return goal
-
-
-@app.patch("/api/goals/{goal_id}")
-async def api_update_goal(goal_id: str, payload: GoalUpdate) -> dict[str, Any]:
-    local_store.init_db()
-    goal = local_store.update_goal(goal_id, payload.model_dump(exclude_unset=True))
-    if goal is None:
-        raise HTTPException(status_code=404, detail="Goal not found")
-    return goal
-
-
-@app.get("/api/goals/{goal_id}/tasks")
-async def api_goal_tasks(goal_id: str) -> list[dict[str, Any]]:
-    local_store.init_db()
-    return local_store.list_tasks(goal_id=goal_id)
+    return local_store.get_or_create_tag(payload.name)
 
 
 @app.get("/api/tasks")
 async def api_list_tasks(
-    goal_id: str | None = Query(default=None),
+    tag_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
     include_archived: bool = Query(default=False),
+    with_subtasks: bool = Query(default=False),
 ) -> list[dict[str, Any]]:
     local_store.init_db()
-    return local_store.list_tasks(goal_id=goal_id, status=status, include_archived=include_archived)
+    return local_store.list_tasks(
+        tag_id=tag_id,
+        status=status,
+        include_archived=include_archived,
+        with_subtasks=with_subtasks,
+    )
 
 
 @app.post("/api/tasks")
@@ -294,13 +234,18 @@ async def api_update_task(task_id: str, payload: TaskUpdate) -> dict[str, Any]:
     return task
 
 
-@app.post("/api/tasks/{task_id}/progress")
-async def api_add_progress(task_id: str, payload: ProgressCreate) -> dict[str, Any]:
+@app.post("/api/tasks/{task_id}/subtasks")
+async def api_create_subtask(task_id: str, payload: SubtaskCreate) -> dict[str, Any]:
     local_store.init_db()
-    task = local_store.add_progress(task_id, payload.progress_delta, payload.minutes, payload.summary)
-    if task is None:
+    parent = local_store.get_task(task_id)
+    if parent is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+    return local_store.create_task(
+        {
+            "title": payload.title,
+            "parent_task_id": task_id,
+        }
+    )
 
 
 @app.post("/api/tasks/{task_id}/complete")
@@ -330,12 +275,6 @@ async def api_delete_task(task_id: str) -> dict[str, bool]:
     return {"deleted": True}
 
 
-@app.get("/api/planning/due")
-async def api_due_buckets() -> dict[str, list[dict[str, Any]]]:
-    local_store.init_db()
-    return local_store.due_buckets()
-
-
 @app.get("/api/suggestions/next")
 async def api_suggest_next(limit: int = Query(default=3, ge=1, le=20)) -> list[dict[str, Any]]:
     local_store.init_db()
@@ -361,3 +300,9 @@ async def api_ai_confirm(draft_id: str, payload: AiConfirm) -> dict[str, Any]:
 async def api_summary() -> dict[str, str]:
     local_store.init_db()
     return {"summary": local_store.summarize_workspace()}
+
+
+@app.get("/api/activity")
+async def api_activity(days: int = Query(default=90, ge=1, le=400)) -> dict[str, Any]:
+    local_store.init_db()
+    return local_store.get_activity(days)

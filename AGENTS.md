@@ -43,12 +43,26 @@ rtk pip list            rtk pnpm install        rtk npm run <script>
 
 ## Workmap Project Notes
 
-- This repository is a local-first planner called Workmap.
-- Frontend runs from `frontend/` with Vite.
-- Backend runs from `backend/` with FastAPI.
+- This repository is a local-first planner called Workmap: a single-screen,
+  minimal to-do list with tags, subtasks, and a streak/activity heatmap.
+  Design source of truth: `docs/superpowers/specs/2026-07-03-workmap-today-redesign-design.md`
+  (read the "v3" section — it supersedes earlier versions).
+- Frontend runs from `frontend/` with Vite; the whole UI is one file,
+  `frontend/src/App.jsx`, rendered as a single screen (no sidebar, no
+  multi-page nav).
+- Backend runs from `backend/` with FastAPI + raw sqlite3 (no ORM).
 - Local data is stored in SQLite at `backend/planner.sqlite3`.
 - Do not reintroduce Supabase as the default storage path unless explicitly requested.
-- AI planner should use local Ollama when available and deterministic fallback otherwise.
+- Goals do not exist as an entity anymore — they were replaced by
+  lightweight, many-to-many **tags** (`tags` + `task_tags` tables). Do not
+  reintroduce `goal_id`, priority, estimate_minutes, logged_minutes, or
+  progress_percent on tasks; these were intentionally removed.
+- Tasks have only two statuses: `backlog` and `done`. There is no task
+  detail page — checking, expanding, editing description, adding
+  subtasks, and adding tags all happen inline on the row.
+- AI planner should use local Ollama when available and deterministic
+  fallback otherwise, and should resolve a list of tag names instead of a
+  single `goal_id`.
 - Mutating AI actions must be previewed before confirmation.
 - New tasks must default to `backlog`.
-- Verify changes with `python -m py_compile backend/api/server.py backend/db/local_store.py` and `cd frontend && npm run lint && npm run build`.
+- Verify changes with `python -m py_compile backend/api/server.py backend/db/local_store.py`, `python3 -m unittest discover backend/tests -v`, and `cd frontend && npm run lint && npm run build`.
