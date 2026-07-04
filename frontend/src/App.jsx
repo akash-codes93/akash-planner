@@ -59,7 +59,7 @@ function App() {
 
   async function loadActivity() {
     try {
-      const data = await api('/api/activity?days=90')
+      const data = await api('/api/activity?days=351')
       setActivity(data)
     } catch (err) {
       setError(err.message)
@@ -147,7 +147,7 @@ function App() {
           <input
             value={captureText}
             onChange={(event) => setCaptureText(event.target.value)}
-            placeholder="Capture anything..."
+            placeholder="Capture a task..."
             aria-label="Capture a task"
           />
         </form>
@@ -215,15 +215,25 @@ function FlameIcon({ className = '' }) {
     <svg
       aria-hidden="true"
       className={className}
-      fill="none"
-      height="16"
-      viewBox="0 0 24 24"
-      width="16"
+      viewBox="0 0 100 100"
+      width="24"
+      height="24"
       xmlns="http://www.w3.org/2000/svg"
     >
+      {/* Outer Flame (Red/Orange) */}
       <path
-        d="M12 2c1 3-2 4.5-2 7.5a2 2 0 0 0 4 0c1.2 1 2 2.8 2 4.5a5 5 0 1 1-10 0c0-3.5 2.5-5 3-7 .3-1.2.2-2.7-1-5 1.8.3 3.4 1.5 4 3Z"
-        fill="currentColor"
+        d="M50 95C22.4 95 5 72.6 5 45C5 31.8 10 20 25 15C20.5 28.5 29 38 35 42C30 18.5 50 5 65 5C53.5 25.5 75 32 80 50C85.5 69.8 77.6 95 50 95Z"
+        fill="#ea580c"
+      />
+      {/* Middle Flame (Orange/Yellow) */}
+      <path
+        d="M50 90C28.2 90 14.5 72.4 14.5 50C14.5 39.5 18 29.5 30 25C26.5 36 33.5 44 38.5 47C34.5 27 50.5 15 62 15C53 32 70 38 74 52C78.4 68.2 71.8 90 50 90Z"
+        fill="#f97316"
+      />
+      {/* Inner Flame (Yellow/White) */}
+      <path
+        d="M50 82C34.5 82 25 68 25 50C25 41.5 28 33.5 37 30C34.5 39 40 45 44 47.5C41 31.5 53 22 62 22C55 36 67 41 70 52C73.3 64.5 65.5 82 50 82Z"
+        fill="#facc15"
       />
     </svg>
   )
@@ -232,6 +242,8 @@ function FlameIcon({ className = '' }) {
 function StreakStrip({ activity }) {
   if (!activity) return null
   const days = activity.days ?? []
+  if (days.length === 0) return null
+
   const maxCount = Math.max(1, ...days.map((day) => day.count))
 
   function shade(count) {
@@ -247,24 +259,119 @@ function StreakStrip({ activity }) {
     ? `${formatDayLabel(days[days.length - 1].date)} — ${activity.streak} day${activity.streak === 1 ? '' : 's'} streak`
     : `${activity.streak} day streak`
 
+  // Group days into columns of 7 days (Sunday to Saturday)
+  const dateMap = new Map(days.map((d) => [d.date, d.count]))
+
+  const oldestDateStr = days[0].date
+  const oldestDate = new Date(`${oldestDateStr}T00:00:00`)
+  const oldestDayOfWeek = oldestDate.getDay()
+  const startDate = new Date(oldestDate)
+  startDate.setDate(startDate.getDate() - oldestDayOfWeek)
+
+  const newestDateStr = days[days.length - 1].date
+
+  const toLocalYYYYMMDD = (d) => {
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd}`
+  }
+
+  const gridDays = []
+  const curr = new Date(startDate)
+  while (toLocalYYYYMMDD(curr) <= newestDateStr) {
+    const dateStr = toLocalYYYYMMDD(curr)
+    gridDays.push({
+      date: dateStr,
+      count: dateMap.get(dateStr) ?? 0,
+    })
+    curr.setDate(curr.getDate() + 1)
+  }
+
+  const weeks = []
+  for (let i = 0; i < gridDays.length; i += 7) {
+    weeks.push(gridDays.slice(i, i + 7))
+  }
+
   return (
-    <div className="streak-strip">
-      <span className="streak-flame" title={todayLabel}>
-        <FlameIcon className="flame-icon" />
-        {activity.streak} day{activity.streak === 1 ? '' : 's'} streak
-      </span>
-      <div className="heatmap-grid">
-        {days.map((day) => (
-          <span
-            className={`heatmap-cell heatmap-shade-${shade(day.count)}`}
-            key={day.date}
-            title={`${formatDayLabel(day.date)} — ${day.count} task${day.count === 1 ? '' : 's'} done`}
-          />
-        ))}
+    <div className="activity-container">
+      <div className="streak-header">
+        <div className="streak-flame" title={todayLabel}>
+          <FlameIcon className="flame-icon" />
+          <span className="streak-number">{activity.streak}</span>
+          <span className="streak-label">Day Streak</span>
+        </div>
+      </div>
+
+      <div className="heatmap-card">
+        <div className="heatmap-months-row">
+          {(() => {
+            let lastLabelWeekIdx = -10
+            return weeks.map((week, weekIdx) => {
+              const firstDay = week[0]
+              const dateObj = new Date(`${firstDay.date}T00:00:00`)
+              const monthName = dateObj.toLocaleDateString(undefined, { month: 'short' })
+              const isNewMonth =
+                weekIdx === 0 ||
+                new Date(`${weeks[weekIdx - 1][0].date}T00:00:00`).getMonth() !== dateObj.getMonth()
+
+              const showLabel = isNewMonth && weekIdx - lastLabelWeekIdx >= 3
+              if (showLabel) {
+                lastLabelWeekIdx = weekIdx
+              }
+
+              return (
+                <div key={weekIdx} className="heatmap-month-col">
+                  {showLabel ? <span className="heatmap-month-label">{monthName}</span> : null}
+                </div>
+              )
+            })
+          })()}
+        </div>
+
+        <div className="heatmap-body">
+          <div className="heatmap-weekdays">
+            <span></span>
+            <span>Mon</span>
+            <span></span>
+            <span>Wed</span>
+            <span></span>
+            <span>Fri</span>
+            <span></span>
+          </div>
+
+          <div className="heatmap-weeks-grid">
+            {weeks.map((week, weekIdx) => (
+              <div key={weekIdx} className="heatmap-column">
+                {week.map((day) => (
+                  <span
+                    className={`heatmap-cell heatmap-shade-${shade(day.count)}`}
+                    key={day.date}
+                    title={`${formatDayLabel(day.date)} — ${day.count} task${day.count === 1 ? '' : 's'} done`}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="heatmap-footer">
+          <span className="heatmap-help">Learn how we count contributions</span>
+          <div className="heatmap-legend">
+            <span>Less</span>
+            <span className="heatmap-cell heatmap-shade-0" />
+            <span className="heatmap-cell heatmap-shade-1" />
+            <span className="heatmap-cell heatmap-shade-2" />
+            <span className="heatmap-cell heatmap-shade-3" />
+            <span className="heatmap-cell heatmap-shade-4" />
+            <span>More</span>
+          </div>
+        </div>
       </div>
     </div>
   )
 }
+
 
 function TagTypeahead({ allTags, onPick, onClose }) {
   const [value, setValue] = useState('')
