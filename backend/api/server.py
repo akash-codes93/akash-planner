@@ -71,6 +71,16 @@ class AiConfirm(BaseModel):
     overrides: dict[str, Any] | None = None
 
 
+class AiAskRequest(BaseModel):
+    question: str
+
+
+class AiAskResponse(BaseModel):
+    answer: str
+    type: str
+    tasks: list[Any] = Field(default_factory=list)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     local_store.init_db()
@@ -300,6 +310,13 @@ async def api_ai_confirm(draft_id: str, payload: AiConfirm) -> dict[str, Any]:
 async def api_summary() -> dict[str, str]:
     local_store.init_db()
     return {"summary": local_store.summarize_workspace()}
+
+
+@app.post("/api/ai/ask")
+async def api_ai_ask(payload: AiAskRequest) -> AiAskResponse:
+    local_store.init_db()
+    result = local_store.ai_ask(payload.question)
+    return AiAskResponse(**result)
 
 
 @app.get("/api/activity")

@@ -626,11 +626,21 @@ def due_buckets(tasks: list[dict[str, Any]] | None = None) -> dict[str, list[dic
 
 def suggest_next_tasks(limit: int = 3) -> list[dict[str, Any]]:
     def score(task: dict[str, Any]) -> int:
-        due_bonus = 15 if task.get("due_at") else 0
+        created_raw = task.get("created_at")
+        age_weeks = 0
+        if created_raw:
+            created = _parse_iso(created_raw)
+            if created:
+                age_weeks = max(0, (datetime.now(timezone.utc) - created).days // 7)
+        age_score = age_weeks * 2
+        subtask_score = 0
+        for sub in task.get("subtasks") or []:
+            if sub["status"] != "done":
+                subtask_score += 3
         tag_bonus = 3 * len(task.get("tags") or [])
-        return due_bonus + tag_bonus
+        return age_score + subtask_score + tag_bonus
 
-    tasks = [task for task in list_tasks() if task["status"] != "done"]
+    tasks = [task for task in list_tasks(with_subtasks=True) if task["status"] != "done"]
     return sorted(tasks, key=score, reverse=True)[:limit]
 
 
@@ -1051,3 +1061,217 @@ def summarize_workspace() -> str:
         f"{len(due['due_soon'])} due soon, {len(due['overdue'])} overdue, {len(due['stale'])} stale. "
         "Use due dates and tags instead of day-only planning."
     )
+
+
+def build_workspace_context() -> str:
+    tasks = list_tasks(status="backlog", with_subtasks=True)
+    done = list_tasks(status="done", with_subtasks=True)
+    tags = list_tags()
+    act = get_activity(30)
+    lines = [f"Activity streak: {act.get('streak', 0)} days"]
+    lines.append(f"Available tags: {', '.join(t['name'] for t in tags) or 'none'}")
+    lines.append("")
+    lines.append(f"Open tasks (backlog) — {len(tasks)} total:")
+    for t in tasks:
+        created = _parse_iso(t.get("created_at"))
+        age_days = (datetime.now(timezone.utc) - created).days if created else 0
+        tag_str = ", ".join(tag["name"] for tag in (t.get("tags") or []))
+        sub_count = len(t.get("subtasks") or [])
+        done_subs = sum(1 for s in (t.get("subtasks") or []) if s["status"] == "done")
+        sub_info = f", {done_subs}/{sub_count} subtasks done" if sub_count else ""
+        lines.append(f"- {t['title']} (created {age_days}d ago{', tags: ' + tag_str if tag_str else ''}{sub_info})")
+        for s in (t.get("subtasks") or []):
+            status_mark = "✓" if s["status"] == "done" else " "
+            lines.append(f"  [{status_mark}] {s['title']}")
+    lines.append("")
+    lines.append(f"Recently completed tasks — last {min(10, len(done))} of {len(done)} total:")
+    for t in done[-10:]:
+        completed = _parse_iso(t.get("completed_at"))
+        ago = (datetime.now(timezone.utc) - completed).days if completed else 0
+        lines.append(f"- {t['title']} (completed {ago}d ago)")
+    return "\n".join(lines)
+
+
+def _call_ollama(prompt: str) -> str | None:
+    body = json.dumps({
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "system": "You are Workmap's planning assistant. Answer concisely based on the workspace data provided.",
+    }).encode()
+    request = urllib.request.Request(OLLAMA_URL, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = json.loads(response.read().decode())
+            return raw.get("response", "").strip()
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
+        return None
+
+
+_ASK_KEYWORDS: dict[str, str] = {
+    "work on next": "next",
+    "prioritize": "next",
+    "should i do": "next",
+    "pick next": "next",
+    "open items": "list",
+    "what's open": "list",
+    "show me": "list",
+    "stale": "stale",
+    "getting old": "stale",
+    "catch up": "catchup",
+    "summary": "summary",
+    "summarize": "summary",
+    "subtask": "subtask",
+    "plan": "subtask",
+    "how many": "count",
+    "count": "count",
+    "recently closed": "recently_done",
+    "recently completed": "recently_done",
+    "closed tasks": "recently_done",
+    "done tasks": "recently_done",
+    "completed": "recently_done",
+    "finished": "recently_done",
+    "what did i do": "recently_done",
+}
+
+
+def _detect_intent(question: str) -> str:
+    lower = question.lower().strip()
+    for keyword, intent in _ASK_KEYWORDS.items():
+        if keyword in lower:
+            return intent
+    tags = list_tags()
+    for t in tags:
+        if t["name"].lower() in lower:
+            return "tag_filter"
+    return "next"
+
+
+def ai_ask(question: str) -> dict[str, Any]:
+    intent = _detect_intent(question)
+    context = build_workspace_context()
+
+    if intent == "list":
+        tasks = list_tasks(status="backlog", with_subtasks=True)
+        answer = f"You have {len(tasks)} open tasks:\n"
+        for t in tasks:
+            done_subs = sum(1 for s in (t.get("subtasks") or []) if s["status"] == "done")
+            total_subs = len(t.get("subtasks") or [])
+            sub_str = f" ({done_subs}/{total_subs} subtasks)" if total_subs else ""
+            answer += f"  - {t['title']}{sub_str}\n"
+        return {"answer": answer.strip(), "type": intent, "tasks": tasks}
+
+    if intent == "stale":
+        tasks = list_tasks(status="backlog", with_subtasks=True)
+        now = datetime.now(timezone.utc)
+        stale = [t for t in tasks if _parse_iso(t.get("created_at")) and (now - _parse_iso(t.get("created_at"))).days >= 14]
+        if not stale:
+            return {"answer": "No stale tasks — everything is fresh!", "type": intent, "tasks": []}
+        answer = f"{len(stale)} stale task{'s' if len(stale) > 1 else ''} (older than 14 days):\n"
+        for t in stale:
+            created = _parse_iso(t.get("created_at"))
+            age = (now - created).days if created else 0
+            answer += f"  - {t['title']} ({age}d old)\n"
+        return {"answer": answer.strip(), "type": intent, "tasks": stale}
+
+    if intent == "catchup":
+        act = get_activity(30)
+        tasks = list_tasks(status="backlog", with_subtasks=True)
+        now = datetime.now(timezone.utc)
+        stale = [t for t in tasks if _parse_iso(t.get("created_at")) and (now - _parse_iso(t.get("created_at"))).days >= 14]
+        answer = f"Streak: {act.get('streak', 0)} days. {len(tasks)} open tasks."
+        if stale:
+            answer += f" {len(tasks)} tasks are stale."
+        return {"answer": answer, "type": intent, "tasks": tasks}
+
+    if intent == "recently_done":
+        done = list_tasks(status="done", with_subtasks=True)
+        recent = done[-10:]
+        if not recent:
+            return {"answer": "No completed tasks yet.", "type": intent, "tasks": []}
+        answer = f"Recently completed tasks (last {len(recent)}):\n"
+        for t in reversed(recent):
+            completed = _parse_iso(t.get("completed_at"))
+            ago = (datetime.now(timezone.utc) - completed).days if completed else 0
+            answer += f"  - {t['title']} ({ago}d ago)\n"
+        return {"answer": answer.strip(), "type": intent, "tasks": recent}
+
+    if intent == "summary":
+        s = summarize_workspace()
+        return {"answer": s, "type": intent, "tasks": []}
+
+    if intent == "count":
+        tasks = list_tasks(status="backlog", with_subtasks=True)
+        total_subs = sum(len(t.get("subtasks") or []) for t in tasks)
+        answer = f"{len(tasks)} open tasks, {total_subs} total subtasks."
+        return {"answer": answer, "type": intent, "tasks": tasks}
+
+    if intent == "tag_filter":
+        lower = question.lower()
+        matched_tag = None
+        for t in list_tags():
+            if t["name"].lower() in lower:
+                matched_tag = t
+                break
+        if matched_tag:
+            tag_tasks = list_tasks(tag_id=matched_tag["id"], status="backlog", with_subtasks=True)
+            answer = f"Tasks tagged '{matched_tag['name']}' ({len(tag_tasks)}):\n"
+            for t in tag_tasks:
+                answer += f"  - {t['title']}\n"
+            return {"answer": answer.strip(), "type": "tag_filter", "tasks": tag_tasks}
+        intent = "next"
+
+    if intent == "subtask":
+        tasks = list_tasks(status="backlog", with_subtasks=True)
+        with_subs = [t for t in tasks if t.get("subtasks")]
+        if not with_subs:
+            return {"answer": "No tasks have subtasks yet.", "type": intent, "tasks": []}
+        answer = ""
+        for t in with_subs[:5]:
+            done_subs = sum(1 for s in (t.get("subtasks") or []) if s["status"] == "done")
+            total_subs = len(t.get("subtasks") or [])
+            answer += f"{t['title']}: {done_subs}/{total_subs} subtasks done\n"
+            for s in (t.get("subtasks") or []):
+                mark = "✓" if s["status"] == "done" else "○"
+                answer += f"  {mark} {s['title']}\n"
+        return {"answer": answer.strip(), "type": intent, "tasks": with_subs}
+
+    if intent == "next":
+        ollama_answer = _call_ollama(
+            f"You are Workmap's planning assistant.\n\n"
+            f"Current workspace state:\n{context}\n\n"
+            f"User question: {question}\n\n"
+            f"Answer concisely using only the workspace data above. "
+            f"Recommend 1-3 specific tasks with reasoning based on age, subtask progress, and tags."
+        )
+        if ollama_answer:
+            tasks = list_tasks(status="backlog", with_subtasks=True)
+            return {"answer": ollama_answer, "type": "ollama", "tasks": tasks}
+        next_t = suggest_next_tasks(5)
+        if not next_t:
+            return {"answer": "No open tasks. Create one to get started!", "type": intent, "tasks": []}
+        answer = "Based on age, subtask load, and tags, consider:\n"
+        for t in next_t:
+            created = _parse_iso(t.get("created_at"))
+            age = (datetime.now(timezone.utc) - created).days if created else 0
+            tag_str = ", ".join(tag["name"] for tag in (t.get("tags") or []))
+            sub_info = ""
+            subs = t.get("subtasks") or []
+            if subs:
+                done = sum(1 for s in subs if s["status"] == "done")
+                sub_info = f" ({done}/{len(subs)} subtasks)"
+            answer += f"  - {t['title']} (created {age}d ago{sub_info}, tags: {tag_str})\n"
+        return {"answer": answer.strip(), "type": "fallback", "tasks": next_t}
+
+    ollama_answer = _call_ollama(
+        f"You are Workmap's planning assistant.\n\n"
+        f"Current workspace state:\n{context}\n\n"
+        f"User question: {question}\n\n"
+        f"Answer concisely using only the workspace data above. "
+        f"If the data doesn't contain what the user asks for, say so directly."
+    )
+    if ollama_answer:
+        tasks = list_tasks(status="backlog", with_subtasks=True)
+        return {"answer": ollama_answer, "type": "ollama", "tasks": tasks}
+
+    return {"answer": "I couldn't process that question. Try asking about open items, completed tasks, or what to work on next.", "type": "error", "tasks": []}

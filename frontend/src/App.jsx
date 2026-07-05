@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import AiPlanner from './AiPlanner.jsx'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 
@@ -37,6 +38,8 @@ function App() {
   const [captureText, setCaptureText] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [selectedTaskId, setSelectedTaskId] = useState(null)
+  const taskListRef = useRef(null)
 
   useEffect(() => {
     loadTags()
@@ -59,7 +62,7 @@ function App() {
 
   async function loadActivity() {
     try {
-      const data = await api('/api/activity?days=351')
+      const data = await api('/api/activity?days=301')
       setActivity(data)
     } catch (err) {
       setError(err.message)
@@ -88,7 +91,6 @@ function App() {
     const title = captureText.trim()
     if (!title) return
     setCaptureText('')
-    // Optimistic, non-blocking: fire the request and refresh once it resolves.
     api('/api/tasks', { method: 'POST', body: JSON.stringify({ title }) })
       .then(() => {
         loadTasks()
@@ -140,71 +142,112 @@ function App() {
     }
   }
 
+  async function deleteTask(taskId) {
+    try {
+      await api(`/api/tasks/${taskId}`, { method: 'DELETE' })
+      if (selectedTaskId === taskId) setSelectedTaskId(null)
+      await Promise.all([loadTasks(), loadActivity()])
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const selectedTask = selectedTaskId
+    ? tasks.find((t) => t.id === selectedTaskId) ?? null
+    : null
+
   return (
     <div className="app-shell">
-      <div className="capture-block">
-        <form className="capture-row" onSubmit={captureTask}>
-          <input
-            value={captureText}
-            onChange={(event) => setCaptureText(event.target.value)}
-            placeholder="Capture a task..."
-            aria-label="Capture a task"
-          />
-        </form>
-      </div>
+      <div className="app-layout">
+        <div className="task-list-col" ref={taskListRef}>
+          <div className="capture-block">
+            <div className="capture-brand">
+              <svg className="capture-brand-logo" viewBox="0 0 48 46" width="16" height="15" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c-.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z" fill="#16a34a" />
+              </svg>
+              <span className="capture-brand-text">Workmap</span>
+            </div>
+            <form className="capture-row" onSubmit={captureTask}>
+              <input
+                value={captureText}
+                onChange={(event) => setCaptureText(event.target.value)}
+                placeholder="Capture a task..."
+                aria-label="Capture a task"
+              />
+            </form>
+          </div>
 
-      <StreakStrip activity={activity} />
+          <StreakStrip activity={activity} />
 
-      <div className="divider" />
+          <div className="divider" />
 
-      <div className="tag-filter-row">
-        <div className="tag-filter-pills">
-          <button
-            className={activeTagId === '' ? 'tag-filter-pill active' : 'tag-filter-pill'}
-            onClick={() => setActiveTagId('')}
-            type="button"
-          >
-            All
-          </button>
-          {tags.map((tag) => (
-            <button
-              className={activeTagId === tag.id ? 'tag-filter-pill active' : 'tag-filter-pill'}
-              key={tag.id}
-              onClick={() => setActiveTagId(tag.id)}
-              type="button"
-            >
-              {tag.name}
-            </button>
-          ))}
+          <div className="tag-filter-row">
+            <div className="tag-filter-pills">
+              <button
+                className={activeTagId === '' ? 'tag-filter-pill active' : 'tag-filter-pill'}
+                onClick={() => setActiveTagId('')}
+                type="button"
+              >
+                All
+              </button>
+              {tags.map((tag) => (
+                <button
+                  className={activeTagId === tag.id ? 'tag-filter-pill active' : 'tag-filter-pill'}
+                  key={tag.id}
+                  onClick={() => setActiveTagId(tag.id)}
+                  type="button"
+                >
+                  {tag.name}
+                </button>
+              ))}
+            </div>
+            <label className="show-done">
+              <input
+                checked={showDone}
+                onChange={(event) => setShowDone(event.target.checked)}
+                type="checkbox"
+              />
+              Done
+            </label>
+          </div>
+
+          <div className="divider" />
+
+          {error ? <div className="error-box">Backend not reachable: {error}</div> : null}
+
+          <div className="task-table">
+            {loading ? <p className="muted">Loading...</p> : null}
+            {!loading && !tasks.length ? <p className="muted">Nothing here. Capture a task to get started.</p> : null}
+            {tasks.map((task) => (
+              <TaskRow
+                allTags={tags}
+                key={task.id}
+                onAddTag={addTagToTask}
+                onDelete={deleteTask}
+                onSelect={setSelectedTaskId}
+                onToggleComplete={toggleComplete}
+                selected={selectedTaskId === task.id}
+                task={task}
+              />
+            ))}
+          </div>
         </div>
-        <label className="show-done">
-          <input
-            checked={showDone}
-            onChange={(event) => setShowDone(event.target.checked)}
-            type="checkbox"
-          />
-          Show done
-        </label>
-      </div>
 
-      <div className="divider" />
-
-      {error ? <div className="error-box">Backend not reachable: {error}</div> : null}
-
-      <div className="task-table">
-        {loading ? <p className="muted">Loading...</p> : null}
-        {!loading && !tasks.length ? <p className="muted">Nothing here. Capture a task to get started.</p> : null}
-        {tasks.map((task) => (
-          <TaskRow
-            allTags={tags}
-            key={task.id}
-            onAddSubtask={addSubtask}
-            onAddTag={addTagToTask}
-            onToggleComplete={toggleComplete}
-            onUpdateDescription={updateDescription}
-            task={task}
-          />
-        ))}
+        <div className="detail-panel-col">
+          <AiPlanner />
+          {selectedTask ? (
+            <DetailPanel
+              key={selectedTask.id}
+              allTags={tags}
+              onAddSubtask={addSubtask}
+              onAddTag={addTagToTask}
+              onDelete={deleteTask}
+              onToggleComplete={toggleComplete}
+              onUpdateDescription={updateDescription}
+              task={selectedTask}
+            />
+          ) : null}
+        </div>
       </div>
     </div>
   )
@@ -220,17 +263,14 @@ function FlameIcon({ className = '' }) {
       height="24"
       xmlns="http://www.w3.org/2000/svg"
     >
-      {/* Outer Flame (Red/Orange) */}
       <path
         d="M50 95C22.4 95 5 72.6 5 45C5 31.8 10 20 25 15C20.5 28.5 29 38 35 42C30 18.5 50 5 65 5C53.5 25.5 75 32 80 50C85.5 69.8 77.6 95 50 95Z"
         fill="#ea580c"
       />
-      {/* Middle Flame (Orange/Yellow) */}
       <path
         d="M50 90C28.2 90 14.5 72.4 14.5 50C14.5 39.5 18 29.5 30 25C26.5 36 33.5 44 38.5 47C34.5 27 50.5 15 62 15C53 32 70 38 74 52C78.4 68.2 71.8 90 50 90Z"
         fill="#f97316"
       />
-      {/* Inner Flame (Yellow/White) */}
       <path
         d="M50 82C34.5 82 25 68 25 50C25 41.5 28 33.5 37 30C34.5 39 40 45 44 47.5C41 31.5 53 22 62 22C55 36 67 41 70 52C73.3 64.5 65.5 82 50 82Z"
         fill="#facc15"
@@ -259,7 +299,6 @@ function StreakStrip({ activity }) {
     ? `${formatDayLabel(days[days.length - 1].date)} — ${activity.streak} day${activity.streak === 1 ? '' : 's'} streak`
     : `${activity.streak} day streak`
 
-  // Group days into columns of 7 days (Sunday to Saturday)
   const dateMap = new Map(days.map((d) => [d.date, d.count]))
 
   const oldestDateStr = days[0].date
@@ -372,7 +411,6 @@ function StreakStrip({ activity }) {
   )
 }
 
-
 function TagTypeahead({ allTags, onPick, onClose }) {
   const [value, setValue] = useState('')
   const suggestions = useMemo(
@@ -419,49 +457,19 @@ function TagTypeahead({ allTags, onPick, onClose }) {
   )
 }
 
-function DescriptionField({ task, onSave }) {
-  // Keyed by task.id in the parent, so this remounts (and re-reads the
-  // latest description) whenever the row switches to a different task.
-  const [value, setValue] = useState(task.description || '')
-  const textareaRef = useRef(null)
-
-  useEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [value])
-
-  function handleBlur() {
-    const trimmed = value.trim()
-    if (trimmed !== (task.description || '')) {
-      onSave(trimmed)
-    }
-  }
-
-  return (
-    <textarea
-      className="task-description-input"
-      onBlur={handleBlur}
-      onChange={(event) => setValue(event.target.value)}
-      placeholder="Add a description..."
-      ref={textareaRef}
-      rows={1}
-      value={value}
-    />
-  )
-}
-
-function TaskRow({ task, onToggleComplete, onAddSubtask, onAddTag, onUpdateDescription, allTags, nested = false }) {
-  const [expanded, setExpanded] = useState(false)
+function DetailPanel({ task, onToggleComplete, onAddSubtask, onAddTag, onUpdateDescription, onDelete, allTags }) {
+  const [description, setDescription] = useState(task.description || '')
   const [subtaskTitle, setSubtaskTitle] = useState('')
   const [addingTag, setAddingTag] = useState(false)
   const subtasks = task.subtasks ?? []
   const isDone = task.status === 'done'
-  // Top-level rows can always expand to reveal a description field and the
-  // subtask list/add-form, even when both are currently empty. Subtasks stay
-  // one level deep and are never themselves expandable.
-  const canExpand = !nested
+
+  function handleDescriptionBlur() {
+    const trimmed = description.trim()
+    if (trimmed !== (task.description || '')) {
+      onUpdateDescription(task.id, trimmed)
+    }
+  }
 
   async function handleAddSubtask(event) {
     event.preventDefault()
@@ -472,22 +480,103 @@ function TaskRow({ task, onToggleComplete, onAddSubtask, onAddTag, onUpdateDescr
   }
 
   return (
-    <div className={`task-row ${isDone ? 'is-done' : ''} ${nested ? 'task-row-nested' : ''}`}>
-      <div className="task-row-main">
+    <div className="detail-panel">
+      <div className="detail-panel-header">
+        <div className="detail-panel-title-row">
+          <button
+            aria-label={isDone ? 'Mark not done' : 'Mark done'}
+            className={`task-checkbox ${isDone ? 'checked' : ''}`}
+            onClick={() => onToggleComplete(task.id)}
+            type="button"
+          >
+            {isDone ? (
+              <svg fill="none" height="10" viewBox="0 0 12 10" width="12">
+                <path d="M1 5.2 4.2 8.4 11 1.4" stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+            ) : null}
+          </button>
+          <span className={`detail-panel-title ${isDone ? 'task-title-done' : ''}`}>{task.title}</span>
+          <div className="detail-tags">
+            {(task.tags ?? []).map((tag) => (
+              <span className="tag-pill" key={tag.id}>{tag.name}</span>
+            ))}
+            {addingTag ? (
+              <TagTypeahead
+                allTags={allTags}
+                onClose={() => setAddingTag(false)}
+                onPick={(name) => { onAddTag(task, name); setAddingTag(false) }}
+              />
+            ) : (
+              <button className="add-tag-btn" onClick={() => setAddingTag(true)} type="button">
+                + tag
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="detail-panel-body">
+        <textarea
+          className="detail-description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          onBlur={handleDescriptionBlur}
+          placeholder="Add description..."
+          rows={1}
+        />
+
+        {task.due_at ? (
+          <div className="detail-meta">
+            <span className="detail-label">Due</span>
+            <span className="detail-value">{toDateInput(task.due_at)}</span>
+          </div>
+        ) : null}
+
+        <div className="detail-subtasks">
+          {subtasks.length > 0 ? subtasks.map((subtask) => (
+            <TaskRow
+              allTags={allTags}
+              key={subtask.id}
+              nested
+              onDelete={onDelete}
+              onToggleComplete={onToggleComplete}
+              task={subtask}
+            />
+          )) : <p className="muted detail-empty">No subtasks yet.</p>}
+        </div>
+        <form className="subtask-add-form" onSubmit={handleAddSubtask}>
+          <input
+            onChange={(event) => setSubtaskTitle(event.target.value)}
+            placeholder="+ Add subtask"
+            value={subtaskTitle}
+          />
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function TaskRow({ task, onToggleComplete, onDelete, onAddTag, allTags, nested = false, onSelect, selected = false }) {
+  const [addingTag, setAddingTag] = useState(false)
+  const isDone = task.status === 'done'
+  const canSelect = !nested
+
+  return (
+    <div className={`task-row ${isDone ? 'is-done' : ''} ${nested ? 'task-row-nested' : ''} ${selected && canSelect ? 'task-row-selected' : ''}`} data-task-id={task.id}>
+      <div className="task-row-main" onClick={() => canSelect && onSelect(selected ? null : task.id)}>
         <button
-          aria-hidden={!canExpand}
-          className={canExpand ? 'task-caret' : 'task-caret task-caret-empty'}
-          disabled={!canExpand}
-          onClick={() => setExpanded((value) => !value)}
-          tabIndex={canExpand ? 0 : -1}
+          aria-hidden={!canSelect}
+          className={canSelect ? 'task-caret' : 'task-caret task-caret-empty'}
+          disabled={!canSelect}
+          tabIndex={canSelect ? 0 : -1}
           type="button"
         >
-          {canExpand ? (expanded ? '▾' : '▸') : ''}
+          {canSelect ? '▸' : ''}
         </button>
         <button
           aria-label={isDone ? `Mark ${task.title} not done` : `Mark ${task.title} done`}
           className={`task-checkbox ${isDone ? 'checked' : ''}`}
-          onClick={() => onToggleComplete(task.id)}
+          onClick={(e) => { e.stopPropagation(); onToggleComplete(task.id) }}
           type="button"
         >
           {isDone ? (
@@ -504,56 +593,42 @@ function TaskRow({ task, onToggleComplete, onAddSubtask, onAddTag, onUpdateDescr
         </button>
         <span className={`task-title ${isDone ? 'task-title-done' : ''}`}>{task.title}</span>
         <span className="task-tags">
-          {(task.tags ?? []).map((tag) => (
+          {(task.tags ?? []).slice(0, 2).map((tag) => (
             <span className="tag-pill" key={tag.id}>{tag.name}</span>
           ))}
+          {(task.tags ?? []).length > 2 ? (
+            <span className="tag-pill tag-pill-overflow">+{task.tags.length - 2}</span>
+          ) : null}
           {!nested ? (
             addingTag ? (
               <TagTypeahead
                 allTags={allTags}
                 onClose={() => setAddingTag(false)}
-                onPick={(name) => onAddTag(task, name)}
+                onPick={(name) => { onAddTag(task, name); setAddingTag(false) }}
               />
             ) : (
-              <button className="add-tag-btn" onClick={() => setAddingTag(true)} type="button">
+              <button className="add-tag-btn" onClick={(e) => { e.stopPropagation(); setAddingTag(true) }} type="button">
                 + tag
               </button>
             )
           ) : null}
         </span>
         {task.due_at ? <span className="task-due">{toDateInput(task.due_at)}</span> : null}
-      </div>
-      {expanded ? (
-        <div className="task-expanded">
-          <DescriptionField
-            key={task.id}
-            onSave={(description) => onUpdateDescription(task.id, description)}
-            task={task}
-          />
-          {subtasks.length ? (
-            <div className="subtask-list">
-              {subtasks.map((subtask) => (
-                <TaskRow
-                  allTags={allTags}
-                  key={subtask.id}
-                  nested
-                  onAddSubtask={onAddSubtask}
-                  onAddTag={onAddTag}
-                  onToggleComplete={onToggleComplete}
-                  task={subtask}
-                />
-              ))}
-            </div>
-          ) : null}
-          <form className="subtask-add-form" onSubmit={handleAddSubtask}>
-            <input
-              onChange={(event) => setSubtaskTitle(event.target.value)}
-              placeholder="+ subtask"
-              value={subtaskTitle}
+        <button
+          aria-label={`Delete ${task.title}`}
+          className="task-delete-btn"
+          onClick={(e) => { e.stopPropagation(); if (window.confirm('Delete this task?')) onDelete(task.id) }}
+          title="Delete task"
+          type="button"
+        >
+          <svg fill="none" height="14" viewBox="0 0 14 14" width="14">
+            <path
+              d="M2 3.5h10M5 3.5V2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M11.5 3.5v8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-8"
+              stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.2"
             />
-          </form>
-        </div>
-      ) : null}
+          </svg>
+        </button>
+      </div>
     </div>
   )
 }
