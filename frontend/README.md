@@ -1,16 +1,27 @@
-# React + Vite
+# Workmap Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 + Vite single-page UI. One file (`src/App.jsx`) renders the entire screen — task list, capture input, tag filters, detail panel, AI planner, and streak heatmap.
 
-Currently, two official plugins are available:
+## Scripts
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm run dev       # Dev server with HMR (port 5173)
+npm run build     # Production build to dist/
+npm run lint      # ESLint checks
+```
 
-## React Compiler
+## Key Files
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| File | Role |
+|---|---|
+| `src/App.jsx` | All components inline — no external UI library |
+| `src/App.css` | All styles — no CSS framework |
+| `src/AiPlanner.jsx` | Chat widget for AI planner |
+| `public/favicon.svg` | Purple sparkle logo (source of truth for app icon) |
 
-## Expanding the ESLint configuration
+## Conventions
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- No router, no sidebar, no multi-page navigation
+- Tasks have only two statuses: `backlog` and `done`
+- All interactions (check, expand, edit, add subtag, add tag) happen inline on the row
+- Tags are right-aligned on each task row, showing 2 max with +N overflow

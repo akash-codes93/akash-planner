@@ -1,0 +1,15 @@
+{
+  "name": "workmap",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:backend": "cd ../backend && python build.py",
+    "build:frontend": "cd ../frontend && npm run build",
+    "build": "npm run build:backend && npm run build:frontend && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  }
+}

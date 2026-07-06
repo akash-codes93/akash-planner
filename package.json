@@ -1,0 +1,10 @@
+{
+  "name": "workmap-workspace",
+  "private": true,
+  "scripts": {
+    "electron": "cd backend && python build.py && cd ../frontend && npm run build && cd ../electron && npm start",
+    "electron:build": "cd backend && python build.py && cd ../frontend && npm run build && cd ../electron && npx electron-builder",
+    "dev:web": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && uvicorn api.server:app --reload"
+  }
+}
